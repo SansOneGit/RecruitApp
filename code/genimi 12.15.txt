@@ -1,0 +1,3303 @@
+// @ts-nocheck
+import React, { useState, useEffect, useRef } from 'react';
+import mqtt from 'mqtt'; // 引入 MQTT 库
+
+// ==========================================
+// 全局常量定义 (题目与映射)
+// ==========================================
+
+// --- 阶段名称中文映射 ---
+const phaseMap = {
+  consent: '知情同意',
+  demographics: '基本信息',
+  pretest: '前测阶段',
+  familiarization: '平台熟悉',
+  learning: '正式学习',
+  posttest: '后测阶段',
+  nasa: 'NASA-TLX量表',
+  complete: '实验完成'
+};
+
+// --- 本地存储键名 ---
+const STORAGE_KEY = 'thesis_experiment_data_backup_v1';
+
+// --- 针对6个不同内容块的差异化反馈数据库 (已修正：与题目强关联) ---
+const CONTENT_FEEDBACK_MAP = {
+  'gibson': {
+    label: '1. 概念起源 (Gibson)',
+    levels: {
+      1: { title: "💡 概念澄清 (Gibson)", content: "Gibson定义的关键点：可供性是环境与行动者(Actor)之间的关系。它不仅取决于物体属性，还取决于行动者的能力（如身高、力量）。" },
+      2: { title: "🔗 案例连接 (Gibson)", content: "看右侧的门把手：它的物理结构（形状、高度）正好匹配了人手（行动者）的抓握能力。这就是客观的可供性。" },
+      3: { title: "🚀 实践引导 (Gibson)", content: "设计自检：你的产品是否考虑了用户的能力？比如，按钮是否在用户手指的可及范围内？这是Gibson理论的延伸。" }
+    }
+  },
+  'norman': {
+    label: '2. Norman的修正 (感知)',
+    levels: {
+      1: { title: "💡 概念澄清 (Norman)", content: "Norman修正了Gibson的观点：在屏幕里，物理属性不重要，重要的是用户'感知' (Perceived) 到它能做什么。这是两者的最大区别。" },
+      2: { title: "🔗 案例连接 (Norman)", content: "看右侧糟糕的按钮：它可能有点击功能，但没有视觉线索。用户感知不到它是按钮。这就是'感知可供性'的缺失。" },
+      3: { title: "🚀 实践引导 (Norman)", content: "检查你的界面：不仅要功能可用，还要让功能可见。你是否加了阴影或边框来增强这种感知？" }
+    }
+  },
+  'signifier': {
+    label: '3. 可供性 vs 意符',
+    levels: {
+      1: { title: "💡 概念澄清 (意符)", content: "可供性是'能做什么'，意符是'提示'。意符的核心作用是明确告诉用户：'在哪里'操作以及'如何'操作。" },
+      2: { title: "🔗 案例连接 (意符)", content: "平板门上的'推'字就是意符。它弥补了形状的不足，指示了如何操作。好的设计应减少对文字意符的依赖。" },
+      3: { title: "🚀 实践引导 (意符)", content: "混淆自检：用户不知道点哪里？你需要的是意符（如箭头、下划线）。用户不知道能不能点？你需要的是增强感知可供性。" }
+    }
+  },
+  'gaver': {
+    label: '4. Gaver矩阵分类',
+    levels: {
+      1: { title: "💡 概念澄清 (Gaver)", content: "Gaver矩阵核心：显性=可见且可用（完美）；虚假=可见但不可用（骗人）；隐藏=不可见但可用（需探索）；正确拒绝=不可见不可用。" },
+      2: { title: "🔗 案例连接 (Gaver)", content: "右侧的'平板门'是典型的隐藏可供性（功能有，但看不出）。在UI中，下拉刷新或鼠标悬停显示也常属于此类。" },
+      3: { title: "🚀 实践引导 (Gaver)", content: "警惕虚假可供性：有没有图片做得太像按钮（有阴影立体感），让用户误以为能点？这会带来挫败感。" }
+    }
+  },
+  'cues': {
+    label: '5. 视觉线索应用',
+    levels: {
+      1: { title: "💡 概念澄清 (线索)", content: "数字界面依赖视觉线索来模拟物理世界。这通常被称为物理隐喻 (Metaphor)，帮助用户建立心理模型。" },
+      2: { title: "🔗 案例连接 (线索)", content: "右侧的好按钮利用了隐喻：阴影暗示突起，圆角暗示实体。遇到新控件时，拟物是最好的老师。" },
+      3: { title: "🚀 实践引导 (无障碍)", content: "无障碍设计原则：点击区域要够大（费茨定律）；不要仅依赖颜色区分状态（色盲友好，应加形状/文字）；提供清晰的聚焦(Focus)样式。" }
+    }
+  },
+  'flat': {
+    label: '6. 扁平化设计反思',
+    levels: {
+      1: { title: "💡 概念澄清 (扁平化)", content: "过度扁平化移除了阴影和纹理，导致'意符'丢失。用户难以区分文本和按钮，引发认知负荷。" },
+      2: { title: "🔗 案例连接 (扁平化)", content: "对比右侧：如果去掉按钮的背景和边框，只留文字，这就是糟糕的极端扁平化。用户需要猜测哪里可点。" },
+      3: { title: "🚀 实践引导 (改良)", content: "扁平化2.0策略：重新引入微弱阴影，使用高饱和度颜色区分交互元素，或利用公认的图标隐喻（如放大镜）作为意符。" }
+    }
+  },
+  'case_handle': { 
+    label: '案例观察：门把手', 
+    levels: {
+        1: { title: "💡 观察引导", content: "请注意左图的把手，它的物理形状（横向凸起）是否直接暗示了“拉”这个动作？这是强有力的物理意符。" },
+        2: { title: "🔗 理论联系", content: "这对应了Gibson的“物理可供性”。对比右图的平板门，缺乏形状线索，导致了“隐藏可供性”，用户容易推拉搞错。" },
+        3: { title: "🚀 实践思考", content: "如果是你设计，你会如何在该平板门上添加“意符”（如文字或把手图片）来解决“如何操作”的困惑？" }
+    } 
+  },
+  'case_button': { 
+    label: '案例观察：按钮', 
+    levels: {
+        1: { title: "💡 观察引导", content: "请对比左右两个按钮。左侧的阴影和圆角是否让你更想去“点击”它？这是物理隐喻的应用。" },
+        2: { title: "🔗 理论联系", content: "这就是Norman强调的“感知可供性”。右侧设计虽然也能点，但缺乏视觉线索，导致用户感知失败。" },
+        3: { title: "🚀 实践思考", content: "在扁平化设计中，除了加阴影，还可以用颜色（高亮）、位置或图标来增强可点击感。" }
+    } 
+  },
+};
+
+// 默认反馈
+const DEFAULT_FEEDBACK = {
+  1: { title: "💡 Level 1: 概念提示", content: "请仔细阅读左侧的理论定义，并尝试理解其核心概念。" },
+  2: { title: "🔗 Level 2: 案例连接", content: "请观察右侧的案例图片，思考理论是如何在这些具体设计中体现的。" },
+  3: { title: "🚀 Level 3: 实践引导", content: "试着思考如果你是设计师，你会如何改进这些设计以符合理论要求？" }
+};
+
+// --- 前测题目数据 ---
+const PRETEST_QUESTIONS = [
+    { id: 'p1', question: "在参与本实验之前，您是否听说过“可供性 (Affordance)”这一概念？", options: ["从未听说过", "听说过，但不了解具体含义", "了解基本定义", "非常熟悉并应用过"] },
+    { id: 'p2', question: "（单选）根据您的直觉，以下哪个描述最符合“良好的交互设计”？", options: [ "界面包含尽可能多的功能按钮", "用户不需要看说明书就能知道如何操作", "界面使用了最流行的配色方案", "每一个操作步骤都有文字弹窗提示" ] },
+    { id: 'p3', question: "请简要描述您认为什么样的门把手设计是“反直觉”的？（选填）", type: 'text' }
+];
+
+// --- 后测 MCQs 数据 ---
+const POSTTEST_MCQ_QUESTIONS = [
+    {
+      id: 1,
+      type: 'single',
+      question: "1. 根据 James Gibson 的原始定义，可供性（Affordance）不仅取决于物体的物理属性，还取决于什么？",
+      options: [
+        "行动者（Actor）的能力", 
+        "设计师的意图",
+        "用户的文化背景",
+        "当前的照明条件"
+      ],
+      correct: [0] 
+    },
+    {
+      id: 2,
+      type: 'single',
+      question: "2. Donald Norman 提出的“感知可供性”与 Gibson 的原意最大的区别在于：",
+      options: [
+        "Norman 认为可供性只存在于数字界面中",
+        "Norman 强调用户必须能够“感知”到操作的可能性", 
+        "Norman 认为可供性是完全主观的",
+        "Norman 否认了物理属性的重要性"
+      ],
+      correct: [1]
+    },
+    {
+      id: 3,
+      type: 'multi',
+      question: "3. 【多选】根据 Gaver 的可供性矩阵，以下哪些描述是正确的？",
+      options: [
+        "显性可供性：功能存在且信息可见（理想状态）", 
+        "虚假可供性：功能不存在但信息可见（误导用户）", 
+        "隐藏可供性：功能存在但信息不可见（需探索）", 
+        "正确拒绝：功能存在且信息可见（同显性）"
+      ],
+      correct: [0, 1, 2] 
+    },
+    {
+      id: 4,
+      type: 'single',
+      question: "4. 在界面设计中，如果一个图标看起来像按钮（有阴影、立体感），但点击后没有任何反应，这属于：",
+      options: [
+        "隐藏可供性",
+        "虚假可供性", 
+        "显性可供性",
+        "正确拒绝"
+      ],
+      correct: [1]
+    },
+    {
+      id: 5,
+      type: 'multi',
+      question: "5. 【多选】为了在扁平化设计（Flat Design）中增强“意符（Signifiers）”，设计师通常采用哪些手段？",
+      options: [
+        "添加微弱的阴影或边框", 
+        "使用高饱和度的颜色区分交互元素", 
+        "利用公认的图标隐喻（如放大镜代表搜索）", 
+        "去除所有视觉装饰，仅保留文字"
+      ],
+      correct: [0, 1, 2]
+    },
+    {
+      id: 6,
+      type: 'single',
+      question: "6. “意符（Signifiers）”的主要作用是：",
+      options: [
+        "创造功能本身",
+        "美化界面视觉",
+        "向用户传达“何处操作”以及“如何操作”的信号", 
+        "替代可供性"
+      ],
+      correct: [2]
+    },
+    {
+      id: 7,
+      type: 'multi',
+      question: "7. 【多选】以下哪些设计案例属于“隐藏可供性”的应用？（虽然难发现，但有时为了简洁而使用）",
+      options: [
+        "iOS 的下拉搜索功能（屏幕上无箭头提示）", 
+        "带有下划线的蓝色超链接文本",
+        "主要功能按钮的悬停（Hover）显示提示", 
+        "鼠标右键菜单", 
+      ],
+      correct: [0, 3] 
+    },
+    {
+      id: 8,
+      type: 'single',
+      question: "8. 门把手设计中，“平板推板”之所以容易让人困惑，是因为它缺乏支持____动作的意符。",
+      options: [
+        "推",
+        "拉", 
+        "滑动",
+        "旋转"
+      ],
+      correct: [1] 
+    },
+    {
+      id: 9,
+      type: 'multi',
+      question: "9. 【多选】在进行无障碍设计时，为了确保可供性对所有用户可见，应遵循哪些原则？",
+      options: [
+        "不完全依赖颜色来传达状态（如同时使用形状或文字）", 
+        "确保点击区域足够大（符合费茨定律）", 
+        "提供明确的聚焦（Focus）状态样式", 
+        "将所有功能隐藏在汉堡菜单中以简化界面"
+      ],
+      correct: [0, 1, 2]
+    },
+    {
+      id: 10,
+      type: 'single',
+      question: "10. 面对一个全新的、用户从未见过的交互控件，最有效的设计策略是：",
+      options: [
+        "依靠用户的直觉去猜测",
+        "使用物理世界的隐喻（Skeuomorphism）帮助建立心理模型", 
+        "彻底隐藏它直到用户触发",
+        "使用纯文本描述其代码逻辑"
+      ],
+      correct: [1]
+    }
+];
+
+// --- NASA-TLX 维度 ---
+const NASA_DIMENSIONS = [
+    { key: 'mental', label: '🧠 心理需求 (Mental Demand)', description: '需要进行多少思考、记忆、计算或判断？任务是简单直观的，还是复杂繁琐的？' },
+    { key: 'physical', label: '💪 身体需求 (Physical Demand)', description: '需要进行多少身体操作？（例如：鼠标点击、拖拽、键盘输入的强度和频率）' },
+    { key: 'temporal', label: '⏳ 时间需求 (Temporal Demand)', description: '您是否感到时间紧迫？任务节奏是缓慢悠闲的，还是急促忙乱的？' },
+    { key: 'performance', label: '🏆 自我绩效评价 (Performance)', description: '您对自己任务完成质量的满意度如何？（0=非常不满意，100=非常满意）' },
+    { key: 'effort', label: '🏋️ 努力程度 (Effort)', description: '为了完成任务，您在精神和身体上付出了多大程度的努力？' },
+    { key: 'frustration', label: '😫 受挫程度 (Frustration)', description: '在任务过程中，您感到不安全、气馁、烦躁或焦虑的程度如何？' }
+];
+
+// --- 辅助函数：时间格式化 (HH:mm:ss) ---
+const formatTime = (timestamp) => {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const seconds = date.getSeconds().toString().padStart(2, '0');
+  return `${hours}:${minutes}:${seconds}`;
+};
+
+// --- 实时网络数据同步 Hook (基于 MQTT) ---
+const MQTT_BROKER_URL = 'wss://broker.emqx.io:8084/mqtt';
+const BASE_TOPIC = 'design-thesis-experiment-v1'; 
+
+const useRealtimeSync = (role, participantId, onDataReceived, onCommandReceived) => {
+  const [client, setClient] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+
+  useEffect(() => {
+    if (!role) return;
+    if (role === 'learner' && !participantId) return;
+
+    console.log(`[MQTT] Connecting as ${role}...`);
+    
+    const mqttClient = mqtt.connect(MQTT_BROKER_URL, {
+      clean: true,
+      connectTimeout: 4000,
+      clientId: `client_${Math.random().toString(16).slice(2, 8)}`,
+    });
+
+    mqttClient.on('connect', () => {
+      console.log('[MQTT] Connected!');
+      setIsConnected(true);
+
+      if (role === 'experimenter') {
+        mqttClient.subscribe(`${BASE_TOPIC}/+/client`, (err) => {
+          if (!err) console.log('[MQTT] Experimenter subscribed to all clients');
+        });
+      } else if (role === 'learner' && participantId) {
+        mqttClient.subscribe(`${BASE_TOPIC}/${participantId}/server`, (err) => {
+          if (!err) console.log(`[MQTT] Learner ${participantId} subscribed to commands`);
+        });
+      }
+    });
+
+    mqttClient.on('message', (topic, message) => {
+      try {
+        const payload = JSON.parse(message.toString());
+        const topicParts = topic.split('/');
+        const senderId = topicParts[1];
+
+        if (role === 'experimenter') {
+          onDataReceived({ ...payload, participantId: senderId });
+        }
+        
+        if (role === 'learner') {
+            onCommandReceived(payload);
+        }
+      } catch (err) {
+        console.error('[MQTT] Parse error:', err);
+      }
+    });
+
+    setClient(mqttClient);
+
+    return () => {
+      if (mqttClient) {
+        mqttClient.end();
+      }
+    };
+  }, [role, participantId]);
+
+  const sendData = (targetId, type, payload) => {
+    if (!client || !isConnected) return;
+
+    let topic = '';
+    
+    if (role === 'learner') {
+      topic = `${BASE_TOPIC}/${participantId}/client`;
+      const message = { type, payload };
+      client.publish(topic, JSON.stringify(message));
+    } 
+    else if (role === 'experimenter') {
+      if (!targetId) {
+          alert("发送失败：未指定接收者ID");
+          return;
+      }
+      topic = `${BASE_TOPIC}/${targetId}/server`;
+      client.publish(topic, JSON.stringify({ type, payload }));
+    }
+  };
+
+  return { sendData, isConnected };
+};
+
+// 内联样式对象 (保持原样)
+const styles = {
+  app: {
+    minHeight: '100vh',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    lineHeight: 1.6,
+    color: '#1f2937',
+    backgroundColor: '#f3f4f6'
+  },
+  roleSelection: {
+    minHeight: '100vh',
+    background: 'linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2rem'
+  },
+  roleContainer: {
+    maxWidth: '1000px',
+    width: '100%'
+  },
+  roleHeader: {
+    textAlign: 'center',
+    marginBottom: '4rem'
+  },
+  taskBar: {
+    background: '#ffffff',       
+    borderBottom: '1px solid #f3f4f6',
+    padding: '0.75rem 2rem',
+    color: '#3b82f6',            
+    fontSize: '0.95rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',    
+    gap: '0.6rem',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.02)' 
+  },  
+  roleTitle: {
+    fontSize: '2.5rem',
+    fontWeight: '800',
+    color: '#1e3a8a',
+    marginBottom: '1rem',
+    letterSpacing: '-0.025em'
+  },
+  roleSubtitle: {
+    fontSize: '1.1rem',
+    color: '#64748b'
+  },
+  roleGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gap: '2.5rem',
+    marginBottom: '2rem'
+  },
+  roleButton: {
+    background: 'white',
+    padding: '3rem 2rem',
+    borderRadius: '16px',
+    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025)',
+    border: '1px solid #f1f5f9',
+    cursor: 'pointer',
+    transition: 'all 0.3s ease',
+    textAlign: 'center'
+  },
+  roleButtonHover: {
+    transform: 'translateY(-5px)',
+    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+    borderColor: '#3b82f6'
+  },
+  roleButtonTitle: {
+    fontSize: '1.5rem',
+    fontWeight: 'bold',
+    color: '#334155',
+    marginBottom: '0.5rem',
+    marginTop: '1rem'
+  },
+  roleButtonDesc: {
+    color: '#94a3b8',
+    lineHeight: 1.6
+  },
+  loginContainer: {
+    minHeight: '100vh',
+    background: '#f3f4f6',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2rem'
+  },
+  loginBox: {
+    background: 'white',
+    padding: '3rem',
+    borderRadius: '16px',
+    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+    maxWidth: '440px',
+    width: '100%'
+  },
+  loginTitle: {
+    fontSize: '1.75rem',
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: '2rem',
+    textAlign: 'center'
+  },
+  formGroup: {
+    marginBottom: '1.5rem'
+  },
+  label: {
+    display: 'block',
+    fontSize: '0.9rem',
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: '0.5rem'
+  },
+  input: {
+    width: '100%',
+    padding: '0.85rem',
+    border: '1px solid #e2e8f0',
+    borderRadius: '8px',
+    fontSize: '1rem',
+    transition: 'all 0.2s ease',
+    background: '#f8fafc'
+  },
+  inputFocus: {
+    outline: 'none',
+    borderColor: '#3b82f6',
+    boxShadow: '0 0 0 3px rgba(59, 130, 246, 0.15)',
+    background: 'white'
+  },
+  button: {
+    background: '#3b82f6',
+    color: 'white',
+    border: 'none',
+    padding: '0.85rem 1.5rem',
+    borderRadius: '8px',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    width: '100%',
+    boxShadow: '0 4px 6px -1px rgba(59, 130, 246, 0.3)'
+  },
+  buttonHover: {
+    background: '#2563eb',
+    transform: 'translateY(-1px)'
+  },
+  backButton: {
+    background: 'transparent', 
+    border: 'none',
+    color: '#94a3b8',          
+    padding: '0.5rem 0',       
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '0.4rem',
+    fontSize: '0.95rem',          
+    fontWeight: '500',
+    marginBottom: '1.5rem',
+    transition: 'all 0.2s ease' 
+  },
+  consentContainer: {
+    minHeight: '100vh',
+    background: '#f3f4f6',
+    padding: '2rem'
+  },
+  consentBox: {
+    background: 'white',
+    padding: '3rem',
+    borderRadius: '16px',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+    maxWidth: '800px',
+    margin: '0 auto'
+  },
+  consentTitle: {
+    fontSize: '2rem',
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: '2rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem'
+  },
+  consentContent: {
+    lineHeight: 1.8,
+    color: '#475569',
+    marginBottom: '2rem',
+    fontSize: '1.05rem'
+  },
+  learningContainer: {
+    minHeight: '100vh',
+    background: '#f3f4f6'
+  },
+  header: {
+    background: 'white',
+    padding: '0.8rem 2rem',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+    borderBottom: '1px solid #e5e7eb',
+    zIndex: 50,
+    position: 'relative'
+  },
+  headerContent: {
+    maxWidth: '1400px',
+    margin: '0 auto',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  headerInfo: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '2rem'
+  },
+  infoItem: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.6rem',
+    fontSize: '0.95rem',
+    color: '#64748b',
+    fontWeight: '500',
+    background: '#f8fafc',
+    padding: '0.4rem 0.8rem',
+    borderRadius: '20px'
+  },
+  infoIcon: {
+    fontSize: '1.1rem'
+  },
+  splitLayout: {
+    display: 'flex',
+    height: 'calc(100vh - 80px)'
+  },
+  panel: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '2.5rem'
+  },
+  theoryPanel: {
+    borderRight: '1px solid #e2e8f0',
+    background: 'white'
+  },
+  casePanel: {
+    background: '#f8fafc'
+  },
+  panelContent: {
+    background: 'white',
+    padding: '2.5rem',
+    borderRadius: '12px',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)'
+  },
+  panelTitle: {
+    fontSize: '1.6rem',
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: '1.5rem',
+    paddingBottom: '1rem',
+    borderBottom: '2px solid #e2e8f0'
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(15, 23, 42, 0.4)',
+    backdropFilter: 'blur(4px)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '1rem',
+    zIndex: 1000
+  },
+  modal: {
+    background: 'white',
+    borderRadius: '20px',
+    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+    maxWidth: '500px',
+    width: '100%',
+    overflow: 'hidden'
+  },
+  modalHeader: {
+    background: '#f8fafc',
+    color: '#1e293b',
+    padding: '1.25rem 1.5rem',
+    borderBottom: '1px solid #e2e8f0',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  modalTitle: {
+    fontSize: '1.25rem',
+    fontWeight: 'bold',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem'
+  },
+  closeButton: {
+    background: 'none',
+    border: 'none',
+    color: '#94a3b8',
+    fontSize: '1.5rem',
+    cursor: 'pointer',
+    padding: 0,
+    width: '30px',
+    height: '30px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    transition: 'color 0.2s'
+  },
+  modalContent: {
+    padding: '2rem'
+  },
+  modalFooter: {
+    padding: '1.25rem 1.5rem',
+    borderTop: '1px solid #e2e8f0',
+    textAlign: 'right',
+    background: '#f8fafc'
+  },
+  experimenterContainer: {
+    minHeight: '100vh',
+    background: '#f1f5f9',
+    padding: '1.5rem'
+  },
+  dashboard: {
+    maxWidth: '1400px',
+    margin: '0 auto'
+  },
+  dashboardHeader: {
+    background: 'white',
+    padding: '1.5rem',
+    borderRadius: '12px',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+    marginBottom: '1.5rem'
+  },
+  dashboardTitle: {
+    fontSize: '2rem',
+    fontWeight: 'bold',
+    color: '#1e293b',
+    marginBottom: '0.5rem'
+  },
+  dashboardGrid: {
+    display: 'grid',
+    gridTemplateColumns: '300px 1fr 350px', 
+    gap: '1.5rem',
+    height: 'calc(100vh - 180px)', 
+    minHeight: '600px'
+  },
+  dashboardPanel: {
+    background: 'white',
+    padding: '1.5rem',
+    borderRadius: '12px',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    overflow: 'hidden',
+    position: 'relative'
+  },
+  disabledPanel: {
+    pointerEvents: 'none',
+    filter: 'grayscale(0.9) opacity(0.6)'
+  },
+  disabledOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 20,
+    background: 'rgba(255,255,255,0.3)'
+  },
+  disabledText: {
+    background: '#fef2f2',
+    color: '#ef4444',
+    border: '1px solid #fca5a5',
+    padding: '0.5rem 1rem',
+    borderRadius: '8px',
+    fontWeight: 'bold',
+    boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+  },
+  metricGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: '0.8rem',
+    marginBottom: '1.5rem'
+  },
+  metricCard: {
+    background: '#f8fafc',
+    padding: '1rem',
+    borderRadius: '10px',
+    textAlign: 'center',
+    border: '1px solid #e2e8f0'
+  },
+  metricValue: {
+    fontSize: '1.5rem',
+    fontWeight: 'bold',
+    color: '#3b82f6',
+    marginBottom: '0.25rem'
+  },
+  metricLabel: {
+    fontSize: '0.8rem',
+    color: '#64748b'
+  },
+  triggerButtons: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.75rem',
+    marginBottom: '1.5rem'
+  },
+  triggerButton: {
+    padding: '1rem',
+    borderRadius: '10px',
+    border: 'none',
+    color: 'white',
+    fontSize: '0.95rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+  },
+  triggerButton1: { background: 'linear-gradient(to right, #3b82f6, #2563eb)' },
+  triggerButton2: { background: 'linear-gradient(to right, #8b5cf6, #7c3aed)' },
+  triggerButton3: { background: 'linear-gradient(to right, #10b981, #059669)' },
+  triggerButtonDisabled: {
+    background: '#cbd5e1',
+    cursor: 'not-allowed',
+    transform: 'none',
+    boxShadow: 'none',
+    color: '#94a3b8'
+  },
+  logContainer: {
+    flex: 1,
+    overflowY: 'auto',
+    border: '1px solid #e2e8f0',
+    borderRadius: '8px',
+    background: '#f8fafc',
+    padding: '0.5rem'
+  },
+  logEntry: {
+    padding: '0.6rem',
+    borderBottom: '1px solid #e2e8f0',
+    fontSize: '0.8rem',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    display: 'grid',
+    gridTemplateColumns: '70px 145px 1fr', 
+    gap: '0.5rem',
+    alignItems: 'center',
+    background: 'white',
+    marginBottom: '4px',
+    borderRadius: '4px'
+  },
+  logTime: {
+    color: '#94a3b8',
+  },
+  logType: {
+    fontWeight: '600',
+    color: '#334155',
+    background: '#e2e8f0',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    textAlign: 'center',
+    fontSize: '0.7rem',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+  },
+  logData: {
+    color: '#475569',
+    whiteSpace: 'pre-wrap', 
+    wordBreak: 'break-all'
+  }
+};
+
+const Icon = ({ name, size = 20, color = 'currentColor', style = {} }) => {
+  const icons = {
+    clock: '⏱️',
+    eye: '👁️',
+    activity: '📊',
+    zap: '💡',
+    send: '📤',
+    close: '✕',
+    chart: '📈',
+    monitor: '💻',
+    check: '✅',
+    user: '🎓',
+    book: '📖',
+    target: '🎯',
+    lock: '🔐',
+    doc: '📝',
+    brain: '🧠',
+    party: '🎉',
+    alert: '⚠️',
+    lab: '🧪',
+    download: '📥',
+    upload: '📤',
+    wifi: '📡',
+    trash: '🗑️',
+    mouse: '🖱️',
+    pupil: '🧿'
+  };
+  return (
+    <span style={{ fontSize: size, lineHeight: 1, display: 'inline-block', ...style }}>
+      {icons[name] || '📄'}
+    </span>
+  );
+};
+
+const CognitiveLoadPlatform = () => {
+  useEffect(() => {
+    document.title = "Cognitive-Load-Platform";
+  }, []);
+
+  const [role, setRole] = useState(null);
+  const [selectedParticipantId, setSelectedParticipantId] = useState('');
+  const [allParticipants, setAllParticipants] = useState([]);
+  const [experimentPhase, setExperimentPhase] = useState('consent');
+  const [participantId, setParticipantId] = useState('');
+  const [demographics, setDemographics] = useState({ age: '', gender: '', major: '', experience: '' });
+  const [preTestAnswers, setPreTestAnswers] = useState({});
+  const [currentSection, setCurrentSection] = useState('theory');
+  
+  const [scrollCount, setScrollCount] = useState(0); 
+  const [aoiTransitions, setAoiTransitions] = useState(0); 
+  const [sessionTime, setSessionTime] = useState(0);
+  const [currentGazeTarget, setCurrentGazeTarget] = useState('Waiting...');
+  
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [feedbackContent, setFeedbackContent] = useState('');
+  const [feedbackLevel, setFeedbackLevel] = useState(0);
+  const [cooldownRemaining, setCooldownRemaining] = useState(0);
+  const [interventionHistory, setInterventionHistory] = useState([]); 
+  const [behaviorLog, setBehaviorLog] = useState([]); 
+  
+  // 【修复1】使用 ref 来追踪日志，避免 useEffect 依赖变化导致定时器重置
+  const behaviorLogRef = useRef([]);
+
+  // 同步日志到 ref
+  useEffect(() => {
+    behaviorLogRef.current = behaviorLog;
+  }, [behaviorLog]);
+  
+  const [currentPerformance, setCurrentPerformance] = useState(null);
+
+  const [currentContentBlock, setCurrentContentBlock] = useState('gibson');
+  const [levelsByBlock, setLevelsByBlock] = useState({}); 
+
+  // === 新增：Pupil Core 模式状态 ===
+  const [inputMode, setInputMode] = useState('mouse'); // 'mouse' | 'pupil'
+  const [pupilStatus, setPupilStatus] = useState('disconnected'); // 'disconnected', 'connecting', 'connected', 'failed'
+  const [pupilRetryCount, setPupilRetryCount] = useState(0);
+  // 实验者端控制确认弹窗
+  const [showModeConfirm, setShowModeConfirm] = useState(false);
+  const [targetModeToSwitch, setTargetModeToSwitch] = useState(null);
+  const [remoteInputMode, setRemoteInputMode] = useState('mouse'); // 实验者看到的被试当前模式
+
+  const [mcqAnswers, setMcqAnswers] = useState({});
+  const [shortAnswer, setShortAnswer] = useState('');
+  const [nasaTlx, setNasaTlx] = useState({ mental: 50, physical: 50, temporal: 50, performance: 50, effort: 50, frustration: 50 });
+  const [isConsentChecked, setIsConsentChecked] = useState(false);
+  const [famScrollDone, setFamScrollDone] = useState(false); 
+  const [famClickDone, setFamClickDone] = useState(false);   
+  const [famTimerDone, setFamTimerDone] = useState(false);   
+  const [famCountdown, setFamCountdown] = useState(15);      
+  const [showLearningGuide, setShowLearningGuide] = useState(false);
+  
+  const [postTestTimeLeft, setPostTestTimeLeft] = useState(180); 
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+  
+  const [nasaSubmitCountdown, setNasaSubmitCountdown] = useState(10);
+  // 新增：实验者查看详情的 Modal 状态
+  const [showReviewModal, setShowReviewModal] = useState(false);
+
+  // === 新增：WOZ 辅助判断指标状态 ===
+  const [recentUTurnCount, setRecentUTurnCount] = useState(0); // 过去10秒 U-turn 次数
+  
+  // 【修改需求3】检测10s内跨AOI扫视的次数并显示
+  const [recentAoiTransitionCount, setRecentAoiTransitionCount] = useState(0);
+
+  // 【修改需求1】检测被测在同一内容块的停留时间
+  const [currentBlockDwell, setCurrentBlockDwell] = useState(0); 
+  const blockStartTime = useRef(Date.now()); // (保留备用，但不再依赖全局变量)
+  const lastBlockId = useRef('gibson'); // (保留备用)
+
+  const fileInputRef = useRef(null); // 文件上传引用
+
+  const scrollRef = useRef(null);
+  const lastScrollDirection = useRef(null);
+  const lastAOI = useRef('theory');
+  const sessionStartTime = useRef(Date.now());
+  const learningStartTime = useRef(null);
+
+  const experimentData = useRef({
+    participants: new Map() 
+  });
+
+  // === 学习阶段进入时的自动连接逻辑 ===
+  useEffect(() => {
+    if (role === 'learner' && experimentPhase === 'learning') {
+      setInputMode('pupil');
+      initiatePupilConnection();
+    }
+  }, [role, experimentPhase]);
+
+  // 模拟 Pupil Core 连接函数
+  const initiatePupilConnection = () => {
+    // 如果已经在连接或已连接，则跳过
+    if (pupilStatus === 'connected' || pupilStatus === 'connecting') return;
+    
+    setPupilStatus('connecting');
+    console.log('[Pupil] Attempting connection...');
+    
+    // 模拟连接过程延迟
+    setTimeout(() => {
+        // 模拟90%概率连接成功，除非测试失败逻辑
+        const success = true; 
+        if (success) {
+            setPupilStatus('connected');
+            setPupilRetryCount(0); // 重置重试次数
+        } else {
+            handlePupilConnectionError();
+        }
+    }, 1500);
+  };
+
+  // 自动重连逻辑
+  const handlePupilConnectionError = () => {
+      if (pupilRetryCount < 3) {
+          setPupilStatus('disconnected');
+          const nextRetry = pupilRetryCount + 1;
+          setPupilRetryCount(nextRetry);
+          console.log(`[Pupil] Connection failed. Retrying (${nextRetry}/3)...`);
+          // 2秒后自动重连
+          setTimeout(initiatePupilConnection, 2000);
+      } else {
+          setPupilStatus('failed'); // 停止自动重连
+      }
+  };
+
+  // 手动重连
+  const manualReconnect = () => {
+      setPupilRetryCount(0);
+      initiatePupilConnection();
+  };
+
+  const saveExperimentData = () => {
+    if (role !== 'experimenter') return;
+    try {
+      const dataToSave = {
+        participants: Array.from(experimentData.current.participants.entries())
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+    } catch (e) {
+      console.error("Save failed", e);
+    }
+  };
+
+  const loadExperimentData = () => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.participants) {
+           experimentData.current.participants = new Map(parsed.participants);
+           const pIds = Array.from(experimentData.current.participants.keys());
+           setAllParticipants(pIds);
+        }
+      }
+    } catch (e) {
+      console.error("Load failed", e);
+    }
+  };
+
+  const clearExperimentData = () => {
+    if(confirm("⚠️ 警告：确定要清空所有实验数据吗？\n此操作无法撤销，建议先导出数据。")) {
+      experimentData.current.participants = new Map();
+      setAllParticipants([]);
+      setSelectedParticipantId('');
+      localStorage.removeItem(STORAGE_KEY);
+      switchParticipant(''); 
+    }
+  };
+  
+  const deleteParticipantData = (targetId) => {
+    if (!targetId) return;
+    
+    if (confirm(`⚠️ 确定要删除被试 [${targetId}] 的所有数据吗？\n此操作不可恢复！`)) {
+      experimentData.current.participants.delete(targetId);
+      setAllParticipants(prev => prev.filter(id => id !== targetId));
+      if (selectedParticipantId === targetId) {
+        switchParticipant('');
+      }
+      saveExperimentData();
+    }
+  };
+
+  // 导入数据功能
+  const handleImportData = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const importedData = JSON.parse(event.target.result);
+        
+        let newParticipantsCount = 0;
+        
+        // 处理多种格式
+        if (importedData.participants && Array.isArray(importedData.participants)) {
+           // 格式1: Map entries 数组
+           importedData.participants.forEach(([key, value]) => {
+             experimentData.current.participants.set(key, value);
+             newParticipantsCount++;
+           });
+        } else if (importedData.id && typeof importedData.id === 'string' && importedData.id.startsWith('P')) {
+           // 格式2: 单个被试对象
+           experimentData.current.participants.set(importedData.id, importedData);
+           newParticipantsCount = 1;
+        } else if (typeof importedData === 'object') {
+           // 格式3: 对象集合
+           Object.values(importedData).forEach(p => {
+             if (p && p.id) {
+               experimentData.current.participants.set(p.id, p);
+               newParticipantsCount++;
+             }
+           });
+        }
+
+        if (newParticipantsCount > 0) {
+          saveExperimentData();
+          const pIds = Array.from(experimentData.current.participants.keys());
+          setAllParticipants(pIds);
+          
+          if (selectedParticipantId && experimentData.current.participants.has(selectedParticipantId)) {
+              switchParticipant(selectedParticipantId);
+          } else if (pIds.length > 0) {
+              switchParticipant(pIds[0]);
+          }
+
+          alert(`成功导入 ${newParticipantsCount} 条被试数据！`);
+        } else {
+          alert("未在文件中发现有效的被试数据格式。");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("导入失败：文件格式错误或已损坏。");
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  useEffect(() => {
+    if (role === 'experimenter') {
+      loadExperimentData();
+    }
+  }, [role]);
+
+  // === 新增：实时计算客观指标 (WOZ 辅助) ===
+  useEffect(() => {
+    // 仅在实验者模式且选中了被试时运行
+    if (role === 'experimenter' && selectedParticipantId) {
+      const timer = setInterval(() => {
+        const now = Date.now();
+        const tenSecondsAgo = now - 10000;
+        
+        // 【核心修复】：使用 behaviorLogRef.current 代替 state，防止 timer 被频繁重置
+        const currentLogs = behaviorLogRef.current;
+
+        // 1. 计算过去10秒的 U-turn 次数
+        const recentUTurns = currentLogs.filter(log => 
+          log.type === 'u-turn' && log.timestamp >= tenSecondsAgo
+        );
+        setRecentUTurnCount(recentUTurns.length);
+
+        // 2. 【修改需求3】计算过去10秒的 AOI 跨区扫视次数
+        const recentTransitions = currentLogs.filter(log =>
+          log.type === 'aoi-transition' && log.timestamp >= tenSecondsAgo
+        );
+        setRecentAoiTransitionCount(recentTransitions.length);
+
+        // 3. 【核心修复 - 修改需求1】
+        // 从 experimentData 中获取当前选中被试的数据，基于其独立的 blockEntryTime 计算
+        const pData = experimentData.current.participants.get(selectedParticipantId);
+        if (pData && pData.blockEntryTime) {
+           const dwellTimeSeconds = Math.floor((now - pData.blockEntryTime) / 1000);
+           setCurrentBlockDwell(dwellTimeSeconds);
+        } else {
+           setCurrentBlockDwell(0);
+        }
+
+      }, 1000); // 每秒刷新一次
+
+      return () => clearInterval(timer);
+    }
+  // 【核心修复】：移除 behaviorLog 依赖，防止无限重置 timer
+  }, [role, selectedParticipantId]);
+
+  // 自动滚动到顶部
+  useEffect(() => {
+    if (experimentPhase === 'nasa') {
+      window.scrollTo(0, 0);
+    }
+  }, [experimentPhase]);
+
+  const getOrCreateParticipantData = (id) => {
+    if (!experimentData.current.participants.has(id)) {
+      experimentData.current.participants.set(id, {
+        id,
+        startTime: Date.now(),
+        demographics: null,
+        logs: [],            
+        uTurns: [],          
+        aoiTransitions: [],  
+        interventions: [],   
+        performance: null,   
+        nasaTlx: null,
+        preTest: null,
+        posttest: null,
+        currentPhase: 'consent',
+        sessionTime: 0,
+        gazeTarget: 'Waiting...',
+        currentBlock: 'gibson',
+        blockEntryTime: Date.now(), // 初始化块进入时间
+        levels: {}
+      });
+      setAllParticipants(prev => {
+        if(prev.includes(id)) return prev;
+        return [...prev, id];
+      });
+    }
+    return experimentData.current.participants.get(id);
+  };
+
+  const switchParticipant = (pId) => {
+    setSelectedParticipantId(pId);
+    
+    // 切换被试时，重置计时器引用
+    blockStartTime.current = Date.now();
+    lastBlockId.current = 'gibson';
+
+    const pData = experimentData.current.participants.get(pId);
+    
+    if (pData) {
+        setBehaviorLog(pData.logs || []);
+        setScrollCount(pData.uTurns.length || 0);
+        setAoiTransitions(pData.aoiTransitions.length || 0);
+        setInterventionHistory(pData.interventions || []);
+        setCurrentPerformance(pData.performance);
+        setSessionTime(pData.sessionTime || 0);
+        setExperimentPhase(pData.currentPhase || 'consent');
+        setCurrentGazeTarget(pData.gazeTarget || 'Offline');
+        setCurrentContentBlock(pData.currentBlock || 'gibson');
+        setLevelsByBlock(pData.levels || {});
+    } else {
+        setBehaviorLog([]);
+        setScrollCount(0);
+        setAoiTransitions(0);
+        setInterventionHistory([]);
+        setCurrentPerformance(null);
+    }
+  };
+
+  const handleDataFromLearner = (data) => {
+    const pId = data.participantId;
+    if(!pId) return;
+
+    const pData = getOrCreateParticipantData(pId);
+    const payload = data.payload || {};
+
+    // 基础日志与眼动数据
+    if (data.type === 'log') {
+       pData.logs.push(payload);
+       
+       if (payload.type === 'u-turn') {
+         pData.uTurns.push(payload);
+       }
+       if (payload.type === 'aoi-transition') {
+         pData.aoiTransitions.push(payload);
+       }
+       if (payload.type === 'heartbeat') {
+         pData.sessionTime = payload.sessionTime;
+         pData.currentPhase = payload.phase;
+         // 实验者端接收被试当前的输入模式和 Pupil 状态
+         if (pId === selectedParticipantId) {
+             setRemoteInputMode(payload.inputMode || 'mouse');
+         }
+       }
+    }
+    if (data.type === 'gaze') {
+        pData.gazeTarget = payload.target;
+        if (payload.blockId && CONTENT_FEEDBACK_MAP[payload.blockId]) {
+           // 【核心修复 - 修改需求1】
+           // 将停留时间的计算逻辑移入 pData，避免多用户干扰全局变量
+           const newBlockId = payload.blockId;
+           if (newBlockId !== pData.currentBlock) {
+               pData.currentBlock = newBlockId;
+               pData.blockEntryTime = Date.now(); // 记录新的进入时间
+           }
+        }
+    }
+    
+    // 接收各种问卷数据并同步到 ExperimentData
+    if (data.type === 'demographics') {
+        pData.demographics = payload;
+    }
+    if (data.type === 'pretest') {
+        pData.preTest = payload; 
+    }
+    if (data.type === 'nasa') {
+        pData.nasaTlx = payload;
+    }
+
+    if (data.type === 'performance') {
+      pData.performance = { ...payload, timestamp: Date.now() };
+      // 接收被试的详细答题数据
+      pData.posttest = {
+          ...pData.posttest, 
+          mcq: payload.detailedAnswers, 
+          shortAnswer: payload.shortAnswer,
+          score: payload.mcqScore,
+          accuracy: payload.accuracy,
+          completionTimestamp: payload.completionTimestamp
+      };
+    }
+    
+    if (role === 'experimenter') {
+        saveExperimentData();
+    }
+
+    if (!selectedParticipantId) {
+        switchParticipant(pId);
+        return;
+    }
+
+    // 只有当数据来自当前选中的被试时，才更新UI状态
+    if (pId === selectedParticipantId) {
+        if (data.type === 'log') {
+            setBehaviorLog(prev => [...prev, payload]);
+            if (payload.type === 'u-turn') setScrollCount(prev => prev + 1);
+            if (payload.type === 'aoi-transition') setAoiTransitions(prev => prev + 1);
+            if (payload.type === 'heartbeat') {
+                setSessionTime(payload.sessionTime);
+                setExperimentPhase(payload.phase);
+            }
+        }
+        if (data.type === 'gaze') {
+            setCurrentGazeTarget(payload.target);
+            if (payload.blockId && CONTENT_FEEDBACK_MAP[payload.blockId]) {
+               // 这里也需要同步更新 Dashboard 的当前 Block 状态
+               if (payload.blockId !== currentContentBlock) {
+                 setCurrentContentBlock(payload.blockId);
+               }
+            }
+        }
+        if (data.type === 'performance') {
+            setCurrentPerformance(payload);
+        }
+    }
+  };
+
+  const handleCommandFromExperimenter = (data) => {
+      if (data.type === 'command') {
+          if (data.payload.command === 'show_feedback') {
+            setFeedbackContent(data.payload.content);
+            setFeedbackLevel(data.payload.level);
+            setShowFeedback(true);
+            logBehavior('intervention_received', { level: data.payload.level });
+          }
+          if (data.payload.command === 'switch_mode') {
+              const newMode = data.payload.mode;
+              setInputMode(newMode);
+              if (newMode === 'pupil') {
+                  initiatePupilConnection();
+              } else {
+                  setPupilStatus('disconnected'); // 切换回鼠标时断开
+              }
+              alert(`管理员已将输入模式切换为: ${newMode === 'pupil' ? 'Pupil Core 眼动仪' : '鼠标'}`);
+          }
+      }
+  };
+
+  const { sendData, isConnected } = useRealtimeSync(
+    role, 
+    participantId, 
+    handleDataFromLearner, 
+    handleCommandFromExperimenter
+  );
+
+  useEffect(() => {
+    if (experimentPhase === 'posttest' && postTestTimeLeft > 0) {
+      const timer = setTimeout(() => {
+        setPostTestTimeLeft((prev) => prev - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [experimentPhase, postTestTimeLeft]);
+
+  useEffect(() => {
+    if (experimentPhase === 'nasa') {
+      setNasaSubmitCountdown(10);
+      const timer = setInterval(() => {
+        setNasaSubmitCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [experimentPhase]);
+
+  useEffect(() => {
+    if (experimentPhase === 'familiarization') {
+      setFamScrollDone(false);
+      setFamClickDone(false);
+      setFamTimerDone(false);
+      setFamCountdown(15);
+    }
+  }, [experimentPhase]);
+
+  useEffect(() => {
+    if (experimentPhase === 'familiarization' && famCountdown > 0) {
+      const timer = setTimeout(() => {
+        setFamCountdown((current) => current - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    } else if (experimentPhase === 'familiarization' && famCountdown === 0) {
+      setFamTimerDone(true);
+    }
+  }, [experimentPhase, famCountdown]);
+
+  useEffect(() => {
+    let timer;
+    if (role === 'learner' && participantId && experimentPhase !== 'complete') {
+      if (!sessionStartTime.current) {
+        sessionStartTime.current = Date.now();
+      }
+      if (experimentPhase === 'learning' && !learningStartTime.current) {
+        learningStartTime.current = Date.now();
+      }
+      
+      timer = setInterval(() => {
+        const startTime = learningStartTime.current || sessionStartTime.current;
+        const duration = Math.floor((Date.now() - startTime) / 1000);
+        setSessionTime(duration);
+        sendData(null, 'log', { 
+          type: 'heartbeat', 
+          sessionTime: duration, 
+          phase: experimentPhase,
+          inputMode: inputMode, // 发送当前输入模式状态
+          pupilStatus: pupilStatus
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [role, participantId, experimentPhase, sendData, inputMode, pupilStatus]);
+
+  useEffect(() => {
+    if (cooldownRemaining > 0) {
+      const timer = setTimeout(() => {
+        setCooldownRemaining(cooldownRemaining - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [cooldownRemaining]);
+
+  const logBehavior = (type, data) => {
+    const logEntry = {
+      timestamp: Date.now(),
+      participantId,
+      type,
+      ...data
+    };
+    setBehaviorLog(prev => [...prev, logEntry]);
+    if (role === 'learner') {
+      sendData(null, 'log', logEntry);
+    }
+  };
+
+  const handleGazeSim = (blockName, blockId) => {
+    // 【关键修改】如果是 Pupil 模式，禁用鼠标触发的 GazeSim（防止误触）
+    // 除非我们想用鼠标模拟 Pupil 的光标
+    if (inputMode === 'pupil') return; 
+
+    if (role === 'learner') {
+        sendData(null, 'gaze', { target: blockName, blockId: blockId });
+    }
+  };
+
+  // 包装器，用于绑定到 onMouseEnter
+  const handleInteraction = (blockName, blockId) => {
+      handleGazeSim(blockName, blockId);
+  };
+
+  const startExperiment = (id) => {
+    setParticipantId(id);
+    setExperimentPhase('consent');
+    sessionStartTime.current = Date.now();
+    experimentData.current.participants.set(id, {
+      id,
+      startTime: Date.now(),
+      demographics: null,
+      logs: [],
+      uTurns: [],
+      aoiTransitions: [],
+      interventions: [],
+      performance: null,
+      nasaTlx: null,
+      currentBlock: 'gibson',
+      blockEntryTime: Date.now(), // 初始化时间
+    });
+    logBehavior('session_start', { id });
+  };
+
+  const proceedToNextPhase = () => {
+    const phases = ['consent', 'demographics', 'pretest', 'familiarization', 'learning', 'posttest', 'nasa', 'complete'];
+    const currentIndex = phases.indexOf(experimentPhase);
+    if (currentIndex < phases.length - 1) {
+      const nextPhase = phases[currentIndex + 1];
+      setExperimentPhase(nextPhase);
+      logBehavior('phase_change', { from: experimentPhase, to: nextPhase });
+      
+      if (nextPhase === 'complete') {
+         const totalSeconds = Math.floor((Date.now() - (sessionStartTime.current || Date.now())) / 1000);
+         sendData(null, 'log', { 
+          type: 'heartbeat', 
+          sessionTime: totalSeconds, 
+          phase: nextPhase 
+        });
+      }
+
+      if (nextPhase === 'learning') {
+        learningStartTime.current = Date.now();
+        setShowLearningGuide(true);
+      }
+    }
+  };
+
+  const handleScroll = (e) => {
+    const scrollTop = e.target.scrollTop;
+    const direction = scrollTop > (scrollRef.current || 0) ? 'down' : 'up';
+    
+    if (direction !== lastScrollDirection.current && lastScrollDirection.current !== null) {
+      const uTurnData = { 
+        direction, 
+        scrollPosition: scrollTop,
+        section: currentSection 
+      };
+      setScrollCount(prev => prev + 1);
+      logBehavior('u-turn', uTurnData);
+    }
+    
+    lastScrollDirection.current = direction;
+    scrollRef.current = scrollTop;
+  };
+
+  const handleMouseMove = (e, panel) => {
+    const currentAOI = panel;
+    if (currentAOI !== lastAOI.current) {
+      const aoiData = { 
+        from: lastAOI.current, 
+        to: currentAOI 
+      };
+      setAoiTransitions(prev => prev + 1);
+      logBehavior('aoi-transition', aoiData);
+      lastAOI.current = currentAOI;
+    }
+  };
+
+  const triggerIntervention = (level) => {
+    if (cooldownRemaining > 0) return;
+    if (!selectedParticipantId) {
+        alert("请先等待被试连接或选择一个被试");
+        return;
+    }
+
+    const currentBlockData = CONTENT_FEEDBACK_MAP[currentContentBlock] || CONTENT_FEEDBACK_MAP['gibson'];
+    const feedbackContent = currentBlockData.levels?.[level] || DEFAULT_FEEDBACK[level];
+
+    const interventionLog = {
+      timestamp: Date.now(),
+      level: level,
+      contentBlock: currentContentBlock,
+      triggerBy: 'experimenter'
+    };
+
+    setInterventionHistory(prev => [interventionLog, ...prev]);
+    
+    const pData = getOrCreateParticipantData(selectedParticipantId);
+    pData.interventions.push(interventionLog);
+    pData.levels = { ...pData.levels, [currentContentBlock]: level };
+
+    setLevelsByBlock(prev => ({
+      ...prev,
+      [currentContentBlock]: level
+    }));
+    
+    if(role === 'experimenter') saveExperimentData();
+
+    setCooldownRemaining(30);
+    
+    sendData(selectedParticipantId, 'command', { 
+        command: 'show_feedback', 
+        level: level, 
+        content: feedbackContent.content, 
+        title: feedbackContent.title 
+    });
+  };
+
+  // --- 处理数据导出的函数 ---
+  const processDataForExport = (pData) => {
+    if (!pData) return null;
+    
+    const cleanLogs = (pData.logs || [])
+        .filter(l => l.type !== 'heartbeat')
+        .map(l => ({
+            ...l,
+            formattedTime: formatTime(l.timestamp)
+        }));
+    
+    const statistics = {
+        interventionCount: (pData.interventions || []).length,
+        uTurnCount: (pData.uTurns || []).length,
+        aoiTransitionCount: (pData.aoiTransitions || []).length,
+        totalDurationFormatted: `${Math.floor((pData.sessionTime || 0) / 60)}分${(pData.sessionTime || 0) % 60}秒`
+    };
+
+    const readableReport = {
+        basicInfo: pData.demographics || "未填写",
+        preTest: {},
+        postTest: {},
+        nasaTLX: pData.nasaTlx || "未填写"
+    };
+
+    if (pData.preTest) {
+        PRETEST_QUESTIONS.forEach(q => {
+            const val = pData.preTest[q.id];
+            if (val === undefined) return;
+            if (q.type === 'text') {
+                 readableReport.preTest[q.question] = val;
+            } else {
+                 readableReport.preTest[q.question] = `${q.options[val]} [Index:${val}]`;
+            }
+        });
+    }
+
+    if (pData.posttest) {
+        readableReport.postTest['ShortAnswer'] = pData.posttest.shortAnswer;
+        readableReport.postTest['Score'] = pData.posttest.score;
+        readableReport.postTest['Accuracy'] = pData.posttest.accuracy;
+        
+        if (pData.posttest.mcq) {
+             POSTTEST_MCQ_QUESTIONS.forEach(q => {
+                const val = pData.posttest.mcq[q.id];
+                if (val === undefined) return;
+                
+                let answerText = '';
+                if (q.type === 'single') {
+                    answerText = `${q.options[val]} [Index:${val}]`;
+                } else if (q.type === 'multi' && Array.isArray(val)) {
+                    answerText = val.map(v => q.options[v]).join('; ') + ` [Indices:${val.join(',')}]`;
+                }
+                readableReport.postTest[`Q${q.id}: ${q.question}`] = answerText;
+             });
+        }
+    }
+
+    return {
+        ...pData,
+        logs: cleanLogs, 
+        statistics: statistics, 
+        humanReadableReport: readableReport,
+        exportTimestamp: formatTime(Date.now())
+    };
+  };
+
+  const exportAllData = () => {
+    const allData = {};
+    experimentData.current.participants.forEach((value, key) => {
+        allData[key] = processDataForExport(value);
+    });
+
+    const dataStr = JSON.stringify(allData, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const exportFileDefaultName = `experiment_ALL_data_PROCESSED_${new Date().toISOString().slice(0,10)}.json`;
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  };
+
+  const exportParticipantData = () => {
+    if (!selectedParticipantId) {
+        alert("当前没有选定的被试");
+        return;
+    }
+    const pData = experimentData.current.participants.get(selectedParticipantId);
+    const processedData = processDataForExport(pData);
+    
+    const dataStr = JSON.stringify(processedData, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const exportFileDefaultName = `experiment_data_${selectedParticipantId}_PROCESSED_${new Date().toISOString().slice(0,10)}.json`;
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  };
+
+  const formatLogMessage = (log) => {
+    if (log.type === 'u-turn') return `页面回溯: ${log.direction === 'up' ? '向上' : '向下'} (位置: ${log.scrollPosition})`;
+    if (log.type === 'aoi-transition') return `视线切换: ${log.from} -> ${log.to}`;
+    if (log.type === 'intervention_received') return `收到干预: Level ${log.level}`;
+    if (log.type === 'phase_change') return `阶段变更: ${phaseMap[log.from]} -> ${phaseMap[log.to]}`;
+    if (log.type === 'session_start') return `会话开始: ID ${log.id}`;
+    if (log.type === 'performance') return `绩效计算完成: 得分 ${log.score} (正确率 ${log.accuracy})`;
+    const { timestamp, participantId, type, formattedTime, ...rest } = log;
+    return JSON.stringify(rest).replace(/{|}|"/g, ' ').trim();
+  };
+
+  // 触发模式切换请求
+  const requestModeSwitch = (mode) => {
+      setTargetModeToSwitch(mode);
+      setShowModeConfirm(true);
+  };
+
+  // 确认模式切换
+  const confirmModeSwitch = () => {
+      if (!selectedParticipantId) return;
+      sendData(selectedParticipantId, 'command', {
+          command: 'switch_mode',
+          mode: targetModeToSwitch
+      });
+      setShowModeConfirm(false);
+  };
+
+  // 【修改需求2】提醒高负荷的触发规则
+  const isHighLoad = (recentAoiTransitionCount > 4) || (recentUTurnCount > 2) || (currentBlockDwell > 30);
+
+  if (!role) {
+    return (
+      <div style={styles.roleSelection}>
+        <div style={styles.roleContainer}>
+          <div style={styles.roleHeader}>
+            <h1 style={styles.roleTitle}>🧠 认知负荷自适应学习平台</h1>
+            <p style={styles.roleSubtitle}>基于眼动追踪与生成式AI的闭环干预系统演示</p>
+          </div>
+          <div style={styles.roleGrid}>
+            <button onClick={() => setRole('learner')} style={styles.roleButton} onMouseOver={(e) => { e.currentTarget.style.transform = styles.roleButtonHover.transform; e.currentTarget.style.boxShadow = styles.roleButtonHover.boxShadow; }} onMouseOut={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = styles.roleButton.boxShadow; }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <span style={{ fontSize: '4rem' }}>🎓</span>
+                <h2 style={styles.roleButtonTitle}>学习者端</h2>
+                <p style={styles.roleButtonDesc}>体验自适应学习模块，学习设计理论并接收智能反馈</p>
+              </div>
+            </button>
+            <button onClick={() => setRole('experimenter')} style={styles.roleButton} onMouseOver={(e) => { e.currentTarget.style.transform = styles.roleButtonHover.transform; e.currentTarget.style.boxShadow = styles.roleButtonHover.boxShadow; }} onMouseOut={(e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = styles.roleButton.boxShadow; }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <span style={{ fontSize: '4rem' }}>🧪</span>
+                <h2 style={styles.roleButtonTitle}>实验者控制台</h2>
+                <p style={styles.roleButtonDesc}>监控学习者行为，手动触发三层自适应反馈（WOZ方法）</p>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (role === 'experimenter') {
+    const currentLevel = levelsByBlock[currentContentBlock] || 0;
+    const nextSuggestedLevel = Math.min(currentLevel + 1, 3);
+    const currentBlockInfo = CONTENT_FEEDBACK_MAP[currentContentBlock] || CONTENT_FEEDBACK_MAP['gibson'];
+    const isInterventionDisabled = experimentPhase !== 'learning' || !selectedParticipantId;
+
+    return (
+      <div style={styles.experimenterContainer}>
+        <div style={styles.dashboard}>
+          <div style={styles.dashboardHeader}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h1 style={styles.dashboardTitle}>🧪 实验者控制台 (WOZ)</h1>
+                <p style={{ color: '#64748b', fontSize: '0.9rem', display:'flex', alignItems:'center', gap:'1rem' }}>
+                   <span style={{color: isConnected ? '#10b981' : '#ef4444', display:'flex', alignItems:'center', gap:'0.3rem'}}>
+                     <Icon name="wifi" size={14}/> {isConnected ? "已连接服务器" : "正在连接..."}
+                   </span>
+                   <span style={{background: '#f1f5f9', padding: '4px 12px', borderRadius: '20px', display:'flex', alignItems:'center', gap:'0.5rem'}}>
+                      <Icon name="user" size={14}/>
+                      <span style={{fontWeight:'bold', color:'#475569'}}>查看被试:</span>
+                      <select 
+                        value={selectedParticipantId} 
+                        onChange={(e) => switchParticipant(e.target.value)}
+                        style={{
+                            border: 'none', 
+                            background: 'transparent', 
+                            fontSize: '1rem', 
+                            fontWeight: 'bold', 
+                            color: '#2563eb',
+                            cursor: 'pointer',
+                            outline: 'none',
+                            minWidth: '80px'
+                        }}
+                      >
+                          {allParticipants.length === 0 && <option value="">(等待连接...)</option>}
+                          {allParticipants.map(pid => (
+                              <option key={pid} value={pid}>{pid}</option>
+                          ))}
+                      </select>
+                   </span>
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                 <input 
+                    type="file" 
+                    accept=".json" 
+                    style={{ display: 'none' }} 
+                    ref={fileInputRef}
+                    onChange={handleImportData}
+                 />
+                 <button 
+                  onClick={() => fileInputRef.current.click()}
+                  style={{ 
+                      ...styles.button, 
+                      background: 'white', 
+                      color: '#334155', 
+                      border: '1px solid #cbd5e1',
+                      width: 'auto', 
+                      display: 'flex', 
+                      gap: '0.5rem', 
+                      alignItems: 'center',
+                      whiteSpace: 'nowrap',
+                      padding: '0.6rem 1rem'
+                  }}
+                  title="导入之前导出的实验数据"
+                >
+                  <Icon name="upload" size={16} /> 导入数据
+                </button>
+
+                <button
+                  onClick={() => setShowReviewModal(true)}
+                  disabled={!selectedParticipantId}
+                  style={{
+                    ...styles.button,
+                    background: selectedParticipantId ? 'white' : '#f1f5f9',
+                    color: selectedParticipantId ? '#2563eb' : '#94a3b8',
+                    border: '1px solid #cbd5e1',
+                    width: 'auto',
+                    display: 'flex',
+                    gap: '0.5rem',
+                    alignItems: 'center',
+                    cursor: selectedParticipantId ? 'pointer' : 'not-allowed',
+                    whiteSpace: 'nowrap',
+                    padding: '0.6rem 1rem'
+                  }}
+                  title="查看该被试的答题原卷和详细记录"
+                >
+                  <Icon name="doc" size={16} /> 查看详情/阅卷
+                </button>
+
+                 <button 
+                  onClick={() => deleteParticipantData(selectedParticipantId)}
+                  disabled={!selectedParticipantId}
+                  style={{ 
+                      ...styles.button, 
+                      background: selectedParticipantId ? '#fee2e2' : '#f1f5f9', 
+                      color: selectedParticipantId ? '#ef4444' : '#94a3b8', 
+                      border: selectedParticipantId ? '1px solid #fca5a5' : '1px solid #cbd5e1',
+                      width: 'auto', 
+                      display: 'flex', 
+                      gap: '0.5rem', 
+                      alignItems: 'center',
+                      padding: '0.6rem 1rem',
+                      cursor: selectedParticipantId ? 'pointer' : 'not-allowed',
+                      whiteSpace: 'nowrap'
+                  }}
+                  title="删除当前选中的被试数据"
+                >
+                  <Icon name="trash" size={16} /> 删除当前
+                </button>
+
+                 <button 
+                  onClick={clearExperimentData}
+                  style={{ 
+                      ...styles.button, 
+                      background: 'white', 
+                      color: '#ef4444', 
+                      border: '1px solid #fca5a5',
+                      width: 'auto', 
+                      display: 'flex', 
+                      gap: '0.5rem', 
+                      alignItems: 'center',
+                      padding: '0.6rem 1rem',
+                      whiteSpace: 'nowrap'
+                  }}
+                  title="清空本地缓存的所有数据"
+                >
+                  <Icon name="trash" size={16} /> 清除所有
+                </button>
+
+                 <button 
+                  onClick={exportParticipantData}
+                  disabled={!selectedParticipantId}
+                  style={{ 
+                      ...styles.button, 
+                      background: selectedParticipantId ? 'white' : '#f1f5f9', 
+                      color: selectedParticipantId ? '#3b82f6' : '#94a3b8', 
+                      border: '1px solid #cbd5e1',
+                      width: 'auto', 
+                      display: 'flex', 
+                      gap: '0.5rem', 
+                      alignItems: 'center',
+                      cursor: selectedParticipantId ? 'pointer' : 'not-allowed',
+                      whiteSpace: 'nowrap',
+                      padding: '0.6rem 1rem'
+                  }}
+                >
+                  <Icon name="download" size={16} /> 导出当前
+                </button>
+
+                 <button 
+                  onClick={exportAllData}
+                  style={{ 
+                      ...styles.button, 
+                      background: 'white', 
+                      color: '#334155', 
+                      border: '1px solid #cbd5e1',
+                      width: 'auto', 
+                      display: 'flex', 
+                      gap: '0.5rem', 
+                      alignItems: 'center',
+                      whiteSpace: 'nowrap',
+                      padding: '0.6rem 1rem'
+                  }}
+                >
+                  <Icon name="download" size={16} /> 导出所有
+                </button>
+                <button 
+                  onClick={() => setRole(null)} 
+                  style={{ 
+                    ...styles.button, 
+                    background: 'white', 
+                    color: '#ef4444', 
+                    border: '1px solid #ef4444', 
+                    width: 'auto',
+                    whiteSpace: 'nowrap',
+                    padding: '0.6rem 1rem'
+                  }}
+                >
+                  退出
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.dashboardGrid}>
+            <div style={styles.dashboardPanel}>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#334155' }}>
+                <Icon name="user" /> 被试状态 ({selectedParticipantId || '未选择'})
+              </h3>
+              {selectedParticipantId ? (
+                <div style={{ background: '#f0f9ff', padding: '1rem', borderRadius: '8px', border: '1px solid #bae6fd', marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '1.8rem', fontWeight: 'bold', color: '#0284c7', marginBottom: '0.2rem' }}>
+                    {selectedParticipantId}
+                  </div>
+                  <div style={{ fontSize: '0.85rem', color: '#0369a1', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                    <span>⏱️ 时长: {Math.floor(sessionTime / 60)}分 {sessionTime % 60}秒</span>
+                    <span>📍 阶段: <span style={{fontWeight:'bold'}}>{phaseMap[experimentPhase] || experimentPhase}</span></span>
+                    
+                    <span style={{ 
+                      marginTop: '0.5rem', 
+                      borderTop: '1px dashed #bae6fd', 
+                      paddingTop: '0.5rem', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.4rem',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden'
+                    }}>
+                        <Icon name="eye" size={14}/> 
+                        <span style={{ whiteSpace:'nowrap' }}>注视点: </span>
+                        <span style={{ background: '#fff', padding: '0 4px', borderRadius: '2px', fontWeight: 'bold', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {currentGazeTarget}
+                        </span>
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '1.5rem', textAlign: 'center', color: '#94a3b8', border: '2px dashed #e2e8f0', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
+                  请在顶部选择要查看的被试<br/>(被试上线后会自动出现)
+                </div>
+              )}
+              
+              <div style={{ marginBottom: '1rem' }}>
+                {currentPerformance ? (
+                  <div style={{ background: '#f0fdf4', padding: '1rem', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+                    <h4 style={{fontSize:'0.9rem', fontWeight:'bold', color:'#15803d', display:'flex', alignItems:'center', gap:'0.3rem', margin: '0 0 0.5rem 0'}}>
+                        <Icon name="chart" size={14}/> 任务绩效数据
+                    </h4>
+                    <div style={{fontSize:'0.8rem', color:'#166534'}}>
+                         <div style={{marginBottom:'0.2rem'}}>⏳ 总学习时长: <span style={{fontWeight:'bold'}}>{Math.floor(currentPerformance.totalDuration / 60)}分{currentPerformance.totalDuration % 60}秒</span></div>
+                         <div style={{marginBottom:'0.2rem'}}>📝 选择题得分: <span style={{fontWeight:'bold', fontSize:'1rem'}}>{currentPerformance.mcqScore}</span> / 10</div>
+                         <div style={{marginBottom:'0.2rem'}}>🎯 正确率: <span style={{fontWeight:'bold', color: '#15803d'}}>{currentPerformance.accuracy}</span></div>
+                         <div style={{marginTop:'0.5rem', borderTop:'1px dashed #bbf7d0', paddingTop:'0.4rem'}}>
+                           <span style={{fontWeight:'bold'}}>简答题:</span><br/>
+                           <span style={{color:'#334155', fontStyle:'italic'}}>"{currentPerformance.shortAnswer ? currentPerformance.shortAnswer.substring(0,30) : ''}..."</span>
+                         </div>
+                    </div>
+                  </div>
+                ) : (
+                  selectedParticipantId && <div style={{ fontSize: '0.8rem', color: '#9ca3af', textAlign: 'center', fontStyle: 'italic' }}>暂无绩效数据 (实验未完成)</div>
+                )}
+              </div>
+
+              {/* === 输入源控制面板 === */}
+              {selectedParticipantId && (
+                  <div style={{ marginTop: '1rem', background: '#f8fafc', padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                      <h4 style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#475569', marginBottom: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          🎮 输入源控制 (Input Source)
+                      </h4>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                              onClick={() => requestModeSwitch('mouse')}
+                              disabled={remoteInputMode === 'mouse'}
+                              style={{
+                                  flex: 1,
+                                  padding: '0.5rem',
+                                  fontSize: '0.8rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid #cbd5e1',
+                                  background: remoteInputMode === 'mouse' ? '#e2e8f0' : 'white',
+                                  color: remoteInputMode === 'mouse' ? '#64748b' : '#1e293b',
+                                  cursor: remoteInputMode === 'mouse' ? 'default' : 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px'
+                              }}
+                          >
+                             <Icon name="mouse" size={14}/> 鼠标
+                          </button>
+                          <button
+                              onClick={() => requestModeSwitch('pupil')}
+                              disabled={remoteInputMode === 'pupil'}
+                              style={{
+                                  flex: 1,
+                                  padding: '0.5rem',
+                                  fontSize: '0.8rem',
+                                  borderRadius: '6px',
+                                  border: '1px solid #cbd5e1',
+                                  background: remoteInputMode === 'pupil' ? '#e0f2fe' : 'white',
+                                  color: remoteInputMode === 'pupil' ? '#0369a1' : '#1e293b',
+                                  cursor: remoteInputMode === 'pupil' ? 'default' : 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '4px'
+                              }}
+                          >
+                             <Icon name="pupil" size={14}/> Pupil Core
+                          </button>
+                      </div>
+                  </div>
+              )}
+
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#334155', borderTop: '1px solid #e2e8f0', paddingTop: '1rem' }}>
+                <Icon name="check" /> 干预历史 ({selectedParticipantId})
+              </h3>
+              <div style={{ flex: 1, overflowY: 'auto', fontSize: '0.85rem' }}>
+                {interventionHistory.length === 0 ? (
+                  <p style={{ color: '#94a3b8', fontStyle: 'italic' }}>尚无干预记录</p>
+                ) : (
+                  interventionHistory.map((item, idx) => (
+                    <div key={idx} style={{ marginBottom: '0.5rem', padding: '0.5rem', background: '#f8fafc', borderLeft: `3px solid ${item.level === 1 ? '#3b82f6' : item.level === 2 ? '#8b5cf6' : '#10b981'}`, borderRadius: '0 4px 4px 0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: 'bold' }}>Level {item.level}</span>
+                        <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>{formatTime(item.timestamp)}</span>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b' }}>Block: {CONTENT_FEEDBACK_MAP[item.contentBlock]?.label || item.contentBlock}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div style={styles.dashboardPanel}>
+               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#334155' }}>
+                  <Icon name="activity" /> 行为日志 ({selectedParticipantId})
+                </h3>
+                <span style={{ fontSize: '0.75rem', background: '#dcfce7', color: '#166534', padding: '2px 8px', borderRadius: '10px' }}>● Filtered</span>
+               </div>
+              <div style={styles.logContainer}>
+                  {behaviorLog.length === 0 ? (
+                    <p style={{ textAlign: 'center', color: '#94a3b8', marginTop: '2rem', fontSize: '0.9rem' }}>暂无数据记录...</p>
+                  ) : (
+                    behaviorLog.slice().reverse().filter(log => log.type !== 'heartbeat').map((log, index) => (
+                      <div key={index} style={styles.logEntry}>
+                        <span style={styles.logTime}>{formatTime(log.timestamp)}</span>
+                        <span style={{...styles.logType, 
+                          background: log.type === 'u-turn' ? '#fee2e2' : log.type === 'aoi-transition' ? '#e0f2fe' : '#e2e8f0',
+                          color: log.type === 'u-turn' ? '#991b1b' : log.type === 'aoi-transition' ? '#075985' : '#334155'
+                        }} title={log.type}>
+                          {log.type}
+                        </span>
+                        <span style={styles.logData}>
+                           {formatLogMessage(log)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+              </div>
+            </div>
+
+            <div style={{
+                ...styles.dashboardPanel,
+                ...(isInterventionDisabled ? styles.disabledPanel : {}) 
+              }}>
+              {isInterventionDisabled && (
+                <div style={styles.disabledOverlay}>
+                  <div style={styles.disabledText}>
+                    {!selectedParticipantId ? '请先等待被试上线' : '🚫 仅在正式学习阶段可用'}
+                  </div>
+                </div>
+              )}
+
+              {/* === 新增：WOZ 面板 === */}
+              <div style={{ background: '#fff', padding: '1rem', borderRadius: '8px', border: '1px solid #6366f1', marginBottom: '1.5rem', boxShadow: '0 4px 6px -1px rgba(99, 102, 241, 0.1)' }}>
+                  <h4 style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#4f46e5', marginBottom: '0.8rem', display:'flex', alignItems:'center', gap:'0.5rem' }}>
+                      <Icon name="brain" size={16}/> 实时认知负荷指标 (过去10s)
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                      <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '1.8rem', fontWeight: '800', color: recentUTurnCount > 2 ? '#ef4444' : '#334155' }}>
+                              {recentUTurnCount}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748b' }}>U-turns (10s)</div>
+                      </div>
+                      <div style={{ textAlign: 'center' }}>
+                          <div style={{ fontSize: '1.8rem', fontWeight: '800', color: recentAoiTransitionCount > 4 ? '#ef4444' : '#334155' }}>
+                              {recentAoiTransitionCount}
+                          </div>
+                          <div style={{ fontSize: '0.75rem', color: '#64748b' }}>AOI扫视 (10s)</div>
+                      </div>
+                  </div>
+                  {/* 【修改需求1】显示同一内容块停留时间 */}
+                  <div style={{ marginTop: '0.8rem', textAlign: 'center', background: '#f8fafc', padding: '0.5rem', borderRadius: '4px' }}>
+                     <div style={{ fontSize: '0.75rem', color: '#64748b' }}>当前内容块连续停留:</div>
+                     <div style={{ fontSize: '1.2rem', fontWeight: '800', color: currentBlockDwell > 30 ? '#ef4444' : '#334155' }}>
+                        {currentBlockDwell} s
+                     </div>
+                  </div>
+
+                  {/* 【修改需求2】提醒高负荷的触发规则 */}
+                  {isHighLoad && (
+                       <div style={{ marginTop:'0.5rem', padding:'0.4rem', background:'#fef2f2', color:'#b91c1c', fontSize:'0.75rem', borderRadius:'4px', textAlign:'center', fontWeight:'bold' }}>
+                           ⚠️ 高认知负荷预警 (规则触发)
+                       </div>
+                  )}
+              </div>
+              {/* === 结束：WOZ 面板 === */}
+
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#334155' }}>
+                <Icon name="zap" /> 干预控制 ({selectedParticipantId})
+              </h3>
+              
+              <div style={styles.metricGrid}>
+                <div style={styles.metricCard}>
+                  <div style={styles.metricValue}>{scrollCount}</div>
+                  <div style={styles.metricLabel}>累计 U-turn</div>
+                </div>
+                <div style={styles.metricCard}>
+                  <div style={styles.metricValue}>{aoiTransitions}</div>
+                  <div style={styles.metricLabel}>累计 AOI 切换</div>
+                </div>
+              </div>
+
+              <div style={{ background: '#fff7ed', padding: '0.8rem', borderRadius: '8px', marginBottom: '1.5rem', border: '1px solid #ffedd5' }}>
+                <h4 style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#9a3412', marginBottom: '0.2rem' }}>当前内容块 (自动同步):</h4>
+                <select 
+                  value={currentContentBlock} 
+                  onChange={(e) => setCurrentContentBlock(e.target.value)}
+                  disabled={isInterventionDisabled}
+                  style={{ width: '100%', padding: '0.4rem', borderRadius: '4px', border: '1px solid #fdba74', fontSize: '0.85rem', color: '#c2410c', background: 'white' }}
+                >
+                  {Object.entries(CONTENT_FEEDBACK_MAP).map(([key, value]) => (
+                    <option key={key} value={key}>{value.label}</option>
+                  ))}
+                </select>
+                <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: '#c2410c' }}>
+                  当前等级: L{levelsByBlock[currentContentBlock] || 0} → <span style={{ fontWeight: 'bold' }}>推荐: L{nextSuggestedLevel}</span>
+                </div>
+              </div>
+
+              <div style={styles.triggerButtons}>
+                <button 
+                  style={{ ...styles.triggerButton, ...styles.triggerButton1, ...(cooldownRemaining > 0 ? styles.triggerButtonDisabled : {}) }}
+                  disabled={cooldownRemaining > 0 || isInterventionDisabled}
+                  onClick={() => triggerIntervention(1)}
+                >
+                  <span style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>{currentBlockInfo.levels[1]?.title || "Level 1"}</span>
+                </button>
+                <button 
+                  style={{ ...styles.triggerButton, ...styles.triggerButton2, ...(cooldownRemaining > 0 ? styles.triggerButtonDisabled : {}) }}
+                  disabled={cooldownRemaining > 0 || isInterventionDisabled}
+                  onClick={() => triggerIntervention(2)}
+                >
+                   <span style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>{currentBlockInfo.levels[2]?.title || "Level 2"}</span>
+                </button>
+                <button 
+                  style={{ ...styles.triggerButton, ...styles.triggerButton3, ...(cooldownRemaining > 0 ? styles.triggerButtonDisabled : {}) }}
+                  disabled={cooldownRemaining > 0 || isInterventionDisabled}
+                  onClick={() => triggerIntervention(3)}
+                >
+                   <span style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>{currentBlockInfo.levels[3]?.title || "Level 3"}</span>
+                </button>
+              </div>
+              
+              {cooldownRemaining > 0 ? (
+                <div style={{ background: '#f1f5f9', borderRadius: '8px', padding: '0.8rem', textAlign: 'center' }}>
+                  <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.3rem' }}>系统冷却中</p>
+                  <div style={{ height: '6px', background: '#e2e8f0', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ width: `${(cooldownRemaining / 30) * 100}%`, background: '#94a3b8', height: '100%', transition: 'width 1s linear' }}></div>
+                  </div>
+                  <p style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#475569', marginTop: '0.2rem' }}>{cooldownRemaining}s</p>
+                </div>
+              ) : (
+                <div style={{ textAlign: 'center', color: '#10b981', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}>
+                  <span style={{ width: '8px', height: '8px', background: '#10b981', borderRadius: '50%' }}></span>
+                  系统就绪，可触发干预
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* 模式切换确认弹窗 */}
+          {showModeConfirm && (
+              <div style={styles.modalOverlay}>
+                  <div style={{ ...styles.modal, maxWidth: '350px', textAlign: 'center', padding: '1.5rem' }}>
+                      <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</div>
+                      <h3 style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#1e293b', marginBottom: '1rem' }}>
+                          确认切换输入模式？
+                      </h3>
+                      <p style={{ color: '#64748b', lineHeight: 1.6, marginBottom: '1.5rem' }}>
+                          您正在将受试者 {selectedParticipantId} 的输入源切换为：<br/>
+                          <strong style={{ color: '#3b82f6', fontSize: '1.1rem' }}>
+                              {targetModeToSwitch === 'pupil' ? 'Pupil Core 眼动仪' : '普通鼠标'}
+                          </strong>
+                      </p>
+                      <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                          <button
+                              onClick={() => setShowModeConfirm(false)}
+                              style={{
+                                  ...styles.button,
+                                  background: 'white',
+                                  color: '#475569',
+                                  border: '1px solid #e2e8f0',
+                                  boxShadow: 'none',
+                                  width: 'auto'
+                              }}
+                          >
+                              取消
+                          </button>
+                          <button
+                              onClick={confirmModeSwitch}
+                              style={{ ...styles.button, background: '#ef4444', border: 'none', color: 'white', width: 'auto' }}
+                          >
+                              确认切换
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          )}
+          
+          {/* 新增：实验者查看详情模态框 */}
+          {showReviewModal && selectedParticipantId && (
+            <div style={styles.modalOverlay}>
+              <div style={{ ...styles.modal, maxWidth: '900px', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+                <div style={styles.modalHeader}>
+                  <h3 style={styles.modalTitle}><Icon name="doc" /> 答题详情与原卷复原: {selectedParticipantId}</h3>
+                  <button onClick={() => setShowReviewModal(false)} style={styles.closeButton}><Icon name="close" /></button>
+                </div>
+                <div style={{ ...styles.modalContent, overflowY: 'auto', padding: '2rem' }}>
+                  {(() => {
+                    const pData = experimentData.current.participants.get(selectedParticipantId);
+                    if (!pData) return <div style={{textAlign:'center', padding:'2rem', color:'#94a3b8'}}>未找到数据</div>;
+
+                    const demo = pData.demographics || {};
+                    const pre = pData.preTest || {};
+                    const post = pData.posttest || {};
+                    const postMcq = post.mcq || {}; 
+                    const nasa = pData.nasaTlx || {};
+                    const perf = pData.performance || {};
+
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+                        
+                        {/* 1. 基本信息 */}
+                        <section>
+                          <h4 style={{ fontSize: '1.2rem', fontWeight: 'bold', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem', marginBottom: '1rem', color: '#334155' }}>
+                            1. 基本信息 (Demographics)
+                          </h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', background: '#f8fafc', padding: '1rem', borderRadius: '8px' }}>
+                            <div><span style={{color:'#64748b'}}>年龄:</span> <strong>{demo.age || '-'}</strong></div>
+                            <div><span style={{color:'#64748b'}}>性别:</span> <strong>{demo.gender || '-'}</strong></div>
+                            <div><span style={{color:'#64748b'}}>专业:</span> <strong>{demo.major || '-'}</strong></div>
+                            <div><span style={{color:'#64748b'}}>经验:</span> <strong>{demo.experience || '-'}</strong></div>
+                          </div>
+                        </section>
+
+                        {/* 2. 前测 */}
+                        <section>
+                          <h4 style={{ fontSize: '1.2rem', fontWeight: 'bold', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem', marginBottom: '1rem', color: '#334155' }}>
+                            2. 前测问卷 (Pre-test)
+                          </h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                            {PRETEST_QUESTIONS.map(q => {
+                                const ans = pre[q.id];
+                                let ansText = '-';
+                                if(q.type === 'text') ansText = ans || '-';
+                                else if(ans !== undefined) ansText = q.options[ans];
+                                
+                                return (
+                                  <div key={q.id} style={{ fontSize: '0.9rem' }}>
+                                    <div style={{ fontWeight: '600', color:'#475569', marginBottom:'0.2rem' }}>{q.question}</div>
+                                    <div style={{ color: '#1e40af', background: '#eff6ff', padding: '0.4rem 0.8rem', borderRadius: '4px', display:'inline-block' }}>
+                                      回答: {ansText}
+                                    </div>
+                                  </div>
+                                )
+                            })}
+                          </div>
+                        </section>
+
+                        {/* 3. 后测 (重点: 模拟试卷) */}
+                        <section>
+                          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem', marginBottom: '1rem'}}>
+                             <h4 style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#334155', margin:0 }}>
+                               3. 后测 (Post-test) 
+                             </h4>
+                             <div style={{display:'flex', gap:'1rem', alignItems:'center'}}>
+                                {post.completionTimestamp && (
+                                   <span style={{fontSize:'0.85rem', color:'#64748b', background:'#f1f5f9', padding:'2px 8px', borderRadius:'4px'}}>
+                                     完成于: {new Date(post.completionTimestamp).toLocaleString('zh-CN')}
+                                   </span>
+                                )}
+                                <span style={{background:'#dcfce7', color:'#166534', padding:'4px 12px', borderRadius:'20px', fontWeight:'bold', fontSize:'0.9rem'}}>
+                                  得分: {post.score || 0} / {POSTTEST_MCQ_QUESTIONS.length} ({post.accuracy || '0%'})
+                                </span>
+                             </div>
+                          </div>
+                          
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                             {POSTTEST_MCQ_QUESTIONS.map((q, idx) => {
+                               const userAns = postMcq[q.id];
+                               
+                               // 判断正误
+                               let isCorrect = false;
+                               if(q.type === 'single') {
+                                   isCorrect = (userAns === q.correct[0]);
+                               } else {
+                                   isCorrect = (userAns && userAns.length === q.correct.length && userAns.every(v => q.correct.includes(v)));
+                               }
+
+                               return (
+                                 <div key={q.id} style={{ padding: '1rem', borderRadius: '8px', border: '1px solid #e2e8f0', background: isCorrect ? '#f0fdf4' : '#fef2f2' }}>
+                                    <div style={{fontWeight:'bold', color:'#334155', marginBottom:'0.8rem'}}>
+                                      {idx+1}. {q.question} 
+                                      <span style={{marginLeft:'0.5rem', fontSize:'0.8rem', color: isCorrect ? '#16a34a' : '#dc2626'}}>
+                                          {isCorrect ? '✅ 正确' : '❌ 错误'}
+                                      </span>
+                                    </div>
+                                    <div style={{display:'flex', flexDirection:'column', gap:'0.4rem'}}>
+                                       {q.options.map((opt, optIdx) => {
+                                           const isSelected = q.type === 'multi' ? (userAns||[]).includes(optIdx) : (userAns === optIdx);
+                                           const isRightOption = q.correct.includes(optIdx);
+                                           
+                                           let styleObj = { padding: '4px 8px', borderRadius: '4px', fontSize: '0.9rem', color: '#64748b' };
+                                           if (isSelected) {
+                                               styleObj.background = isCorrect ? '#bbf7d0' : '#fecaca';
+                                               styleObj.color = isCorrect ? '#14532d' : '#7f1d1d';
+                                               styleObj.fontWeight = 'bold';
+                                           }
+                                           if (isRightOption && !isSelected) {
+                                               styleObj.border = '1px dashed #22c55e'; // 提示正确答案
+                                           }
+
+                                           return (
+                                              <div key={optIdx} style={styleObj}>
+                                                 {isSelected ? (q.type==='multi'?'☑':'◉') : (q.type==='multi'?'☐':'○')} {opt}
+                                                 {isRightOption && !isSelected && <span style={{marginLeft:'0.5rem', color:'#22c55e', fontSize:'0.8rem'}}>(正确答案)</span>}
+                                              </div>
+                                           )
+                                       })}
+                                    </div>
+                                 </div>
+                               );
+                             })}
+                             
+                             <div style={{ marginTop: '1rem', padding: '1rem', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px' }}>
+                               <strong style={{display:'block', marginBottom:'0.5rem', color:'#334155'}}>简答题回答:</strong>
+                               {/* 【修复2】优化简答题显示：增加 overflow-wrap 和备用数据源读取 */}
+                               <p style={{
+                                 background:'#f1f5f9', 
+                                 padding:'1rem', 
+                                 borderRadius:'6px', 
+                                 margin:0, 
+                                 color:'#475569', 
+                                 whiteSpace:'pre-wrap',
+                                 wordBreak: 'break-word',
+                                 overflowWrap: 'break-word'
+                               }}>
+                                 {post.shortAnswer || perf.shortAnswer || '(未作答)'}
+                               </p>
+                             </div>
+                          </div>
+                        </section>
+
+                        {/* 4. NASA-TLX */}
+                        <section>
+                          <h4 style={{ fontSize: '1.2rem', fontWeight: 'bold', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem', marginBottom: '1rem', color: '#334155' }}>
+                            4. 负荷量表 (NASA-TLX)
+                          </h4>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
+                             {NASA_DIMENSIONS.map(dim => (
+                                 <div key={dim.key} style={{ background: '#f8fafc', padding: '0.8rem', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                                     <div style={{display:'flex', justifyContent:'space-between', fontSize:'0.9rem', fontWeight:'bold', color:'#475569', marginBottom:'0.3rem'}}>
+                                        <span>{dim.label.split(' ')[1]}</span>
+                                        <span style={{color:'#3b82f6'}}>{nasa[dim.key] ?? '-'}</span>
+                                     </div>
+                                     <div style={{height:'6px', background:'#e2e8f0', borderRadius:'3px', overflow:'hidden'}}>
+                                        <div style={{width: `${nasa[dim.key]||0}%`, background: '#3b82f6', height:'100%'}}></div>
+                                     </div>
+                                 </div>
+                             ))}
+                          </div>
+                        </section>
+
+                      </div>
+                    );
+                  })()}
+                </div>
+                <div style={styles.modalFooter}>
+                   <button onClick={() => setShowReviewModal(false)} style={{...styles.button, width:'auto'}}>关闭</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+    );
+  }
+
+  if (role === 'learner') {
+     if (!participantId) {
+      const validateAndLogin = (inputVal) => {
+        const val = inputVal.trim().toUpperCase();
+        const isValid = /^P(0[1-9]|[1-3][0-9]|40)$/.test(val);
+        if (isValid) { startExperiment(val); } else { alert("编号无效！\n请严格输入 P01 到 P40 之间的编号。\n例如：P01, P12, P40"); }
+      };
+      return (
+        <div style={styles.loginContainer}>
+          <div style={styles.loginBox}>
+            <button onClick={() => setRole(null)} style={styles.backButton} onMouseOver={(e) => e.currentTarget.style.color = '#3b82f6'} onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}>
+              <span>⬅</span> 返回首页
+            </button>
+            <h2 style={styles.loginTitle}>🔐 实验登录</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>请输入被试编号 (范围: P01-P40)</label>
+                <input type="text" placeholder="例如: P01" maxLength={3} style={styles.input} onFocus={(e) => { e.target.style.borderColor = styles.inputFocus.borderColor; e.target.style.boxShadow = styles.inputFocus.boxShadow; e.target.style.background = styles.inputFocus.background; }} onBlur={(e) => { e.target.style.borderColor = styles.input.borderColor; e.target.style.boxShadow = 'none'; e.target.style.background = styles.input.background; }} onKeyPress={(e) => { if (e.key === 'Enter') { validateAndLogin(e.currentTarget.value); } }} />
+              </div>
+              <button onClick={() => { const input = document.querySelector('input[type="text"]'); if (input) { validateAndLogin(input.value); } }} style={styles.button} onMouseOver={(e) => { e.target.style.background = styles.buttonHover.background; e.target.style.transform = styles.buttonHover.transform; }} onMouseOut={(e) => { e.target.style.background = styles.button.background; e.target.style.transform = 'none'; }}>开始实验</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'consent') {
+      return (
+        <div style={styles.consentContainer}>
+          <div style={styles.consentBox}>
+            <button onClick={() => setParticipantId('')} style={styles.backButton} onMouseOver={(e) => e.currentTarget.style.color = '#3b82f6'} onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}>
+              <span>⬅</span> 返回登录
+            </button>
+            <h2 style={styles.consentTitle}>📋 知情同意书</h2>
+            <div style={styles.consentContent}>
+              <p>感谢您参与本次认知负荷研究实验。在开始之前，请您仔细阅读以下信息：</p>
+              <h3 style={{ fontWeight: '700', marginTop: '1.5rem', marginBottom: '0.8rem', color: '#334155' }}>📍 实验目的</h3>
+              <p>本研究旨在探索自适应学习系统如何优化设计教育中的认知负荷，提高学习效率。</p>
+              <h3 style={{ fontWeight: '700', marginTop: '1.5rem', marginBottom: '0.8rem', color: '#334155' }}>🔄 实验流程</h3>
+              <ul style={{ paddingLeft: '1.5rem', marginBottom: '1rem', listStyleType: 'none' }}>
+                <li style={{ marginBottom: '0.5rem' }}>1️⃣ 填写基本信息问卷</li>
+                <li style={{ marginBottom: '0.5rem' }}>2️⃣ 学习设计理论内容（约15-20分钟）</li>
+                <li style={{ marginBottom: '0.5rem' }}>3️⃣ 完成后测评估</li>
+                <li style={{ marginBottom: '0.5rem' }}>4️⃣ 填写NASA-TLX工作负荷量表</li>
+              </ul>
+              <h3 style={{ fontWeight: '700', marginTop: '1.5rem', marginBottom: '0.8rem', color: '#334155' }}>🛡️ 数据收集</h3>
+              <p>我们将收集您的交互行为数据、学习表现数据以及主观评价数据。所有数据将严格保密，仅用于学术研究。</p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2rem', padding: '1rem', background: '#f1f5f9', borderRadius: '8px' }}>
+              <input type="checkbox" id="consent" checked={isConsentChecked} onChange={(e) => setIsConsentChecked(e.target.checked)} style={{ width: '1.2rem', height: '1.2rem', cursor: 'pointer' }} />
+              <label htmlFor="consent" style={{ color: '#475569', cursor: 'pointer', userSelect: 'none', fontWeight: '500' }}>我理解上述信息并自愿参与本实验</label>
+            </div>
+            <button onClick={proceedToNextPhase} disabled={!isConsentChecked} style={{ ...styles.button, background: isConsentChecked ? '#3b82f6' : '#cbd5e1', cursor: isConsentChecked ? 'pointer' : 'not-allowed', boxShadow: isConsentChecked ? styles.button.boxShadow : 'none' }} onMouseOver={(e) => { if (isConsentChecked) { e.currentTarget.style.background = styles.buttonHover.background; } }} onMouseOut={(e) => { if (isConsentChecked) { e.currentTarget.style.background = styles.button.background; } }}>我同意，继续下一步</button>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'demographics') {
+      const ageNum = parseInt(demographics.age, 10);
+      const isAgeValid = !isNaN(ageNum) && ageNum >= 22 && ageNum <= 25;
+      const isFormComplete = isAgeValid && demographics.gender !== '' && demographics.major.trim() !== '' && demographics.experience !== '';
+
+      return (
+        <div style={styles.consentContainer}>
+          <div style={styles.consentBox}>
+            <button onClick={() => setExperimentPhase('consent')} style={styles.backButton} onMouseOver={(e) => e.currentTarget.style.color = '#3b82f6'} onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}>
+              <span>⬅</span> 上一步
+            </button>
+            <h2 style={styles.consentTitle}>📝 基本信息问卷</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginBottom: '2.5rem' }}>
+              <div>
+                <label style={styles.label}>年龄 <span style={{color: '#ef4444'}}>*</span></label>
+                <input type="number" value={demographics.age} onChange={(e) => setDemographics(prev => ({ ...prev, age: e.target.value }))} style={{ ...styles.input, borderColor: (demographics.age && !isAgeValid) ? '#ef4444' : styles.input.borderColor }} placeholder="请输入数字 (22-25)" onFocus={(e) => { e.target.style.borderColor = styles.inputFocus.borderColor; e.target.style.boxShadow = styles.inputFocus.boxShadow; }} onBlur={(e) => { e.target.style.borderColor = (demographics.age && !isAgeValid) ? '#ef4444' : styles.input.borderColor; e.target.style.boxShadow = 'none'; }} />
+                {demographics.age && !isAgeValid && ( <p style={{ color: '#ef4444', fontSize: '0.85rem', marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Icon name="alert" size={14}/> 年龄必须在 22 到 25 岁之间</p> )}
+              </div>
+              <div>
+                <label style={styles.label}>性别 <span style={{color: '#ef4444'}}>*</span></label>
+                <select value={demographics.gender} onChange={(e) => setDemographics(prev => ({ ...prev, gender: e.target.value }))} style={styles.input}>
+                  <option value="">请选择</option>
+                  <option value="male">男</option>
+                  <option value="female">女</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+              <div>
+                <label style={styles.label}>设计专业领域 <span style={{color: '#ef4444'}}>*</span></label>
+                <input type="text" value={demographics.major} onChange={(e) => setDemographics(prev => ({ ...prev, major: e.target.value }))} placeholder="例如：产品设计、工业设计、环境设计、视觉传达设计等" style={styles.input} onFocus={(e) => { e.target.style.borderColor = styles.inputFocus.borderColor; e.target.style.boxShadow = styles.inputFocus.boxShadow; }} onBlur={(e) => { e.target.style.borderColor = styles.input.borderColor; e.target.style.boxShadow = 'none'; }} />
+              </div>
+              <div>
+                <label style={styles.label}>设计经验 <span style={{color: '#ef4444'}}>*</span></label>
+                <select value={demographics.experience} onChange={(e) => setDemographics(prev => ({ ...prev, experience: e.target.value }))} style={styles.input}>
+                  <option value="">请选择</option>
+                  <option value="beginner">初学者 (0-1年)</option>
+                  <option value="intermediate">中级 (1-3年)</option>
+                  <option value="advanced">高级 (3年以上)</option>
+                </select>
+              </div>
+            </div>
+            <button onClick={() => { 
+                if (isFormComplete) { 
+                    const pData = experimentData.current.participants.get(participantId);
+                    if (pData) pData.demographics = demographics; 
+                    sendData(null, 'demographics', demographics);
+                    proceedToNextPhase(); 
+                } 
+            }} disabled={!isFormComplete} style={{ ...styles.button, background: isFormComplete ? '#3b82f6' : '#cbd5e1', cursor: isFormComplete ? 'pointer' : 'not-allowed' }} onMouseOver={(e) => { if (isFormComplete) { e.target.style.background = styles.buttonHover.background; } }} onMouseOut={(e) => { if (isFormComplete) { e.target.style.background = styles.button.background; } }}>
+              {demographics.age && !isAgeValid ? '年龄不符合要求' : (isFormComplete ? '继续' : '请填写完整信息')}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'pretest') {
+      const isPretestComplete = preTestAnswers['p1'] !== undefined && preTestAnswers['p2'] !== undefined;
+
+      return (
+        <div style={styles.consentContainer}>
+          <div style={styles.consentBox}>
+             <button onClick={() => setExperimentPhase('demographics')} style={styles.backButton} onMouseOver={(e) => e.currentTarget.style.color = '#3b82f6'} onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}>
+              <span>⬅</span> 上一步
+            </button>
+            <h2 style={styles.consentTitle}>🧩 基线知识预测试</h2>
+            <p style={{ color: '#64748b', marginBottom: '1.5rem' }}>为了评估实验效果，我们需要了解您对相关主题的初始熟悉程度。此部分没有“正确”答案，请根据真实情况作答。</p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginBottom: '2.5rem' }}>
+              {PRETEST_QUESTIONS.map((q) => (
+                <div key={q.id} style={{ padding: '1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
+                  <p style={{ fontWeight: '600', color: '#334155', marginBottom: '1rem' }}>{q.question}</p>
+                  {q.type === 'text' ? (
+                     <input type="text" style={{ ...styles.input, width: '100%' }} placeholder="您的回答..." onChange={(e) => setPreTestAnswers({...preTestAnswers, [q.id]: e.target.value})} value={preTestAnswers[q.id] || ''} />
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                      {q.options.map((opt, idx) => (
+                        <label key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                          <input type="radio" name={q.id} value={idx} checked={preTestAnswers[q.id] === idx} onChange={() => setPreTestAnswers({...preTestAnswers, [q.id]: idx})} style={{ width: '1.1rem', height: '1.1rem', accentColor: '#3b82f6' }} />
+                          <span style={{ color: '#475569' }}>{opt}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => { 
+                if (isPretestComplete) { 
+                    const pData = experimentData.current.participants.get(participantId);
+                    if(pData) pData.preTest = preTestAnswers;
+                    sendData(null, 'pretest', preTestAnswers); 
+                    proceedToNextPhase(); 
+                } 
+            }} disabled={!isPretestComplete} style={{ ...styles.button, background: isPretestComplete ? '#3b82f6' : '#cbd5e1', cursor: isPretestComplete ? 'pointer' : 'not-allowed' }} onMouseOver={(e) => { if(isPretestComplete) e.target.style.background = styles.buttonHover.background; }} onMouseOut={(e) => { if(isPretestComplete) e.target.style.background = styles.button.background; }}>
+              {isPretestComplete ? '提交并进入熟悉阶段' : '请完成必答题'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'familiarization') {
+      const isReady = famScrollDone && famClickDone && famTimerDone;
+      return (
+        <div style={styles.consentContainer}>
+          <div style={{...styles.consentBox, maxWidth: '1000px'}}>
+            <button onClick={() => setExperimentPhase('pretest')} style={styles.backButton} onMouseOver={(e) => e.currentTarget.style.color = '#3b82f6'} onMouseOut={(e) => e.currentTarget.style.color = '#94a3b8'}>
+              <span>⬅</span> 上一步
+            </button>
+            <h2 style={styles.consentTitle}>🎮 平台操作熟悉</h2>
+            <div style={{ background: '#eff6ff', padding: '1.5rem', borderRadius: '12px', marginBottom: '2rem', color: '#1e40af', border: '1px solid #dbeafe' }}>
+              <p><strong>任务说明：</strong> 为确保实验数据的有效性，请您完成以下交互测试：</p>
+              <ul style={{ paddingLeft: '1.5rem', marginTop: '0.5rem', lineHeight: 1.8 }}>
+                <li>{famScrollDone ? '✅ ' : '⬜ '} <strong>左侧：</strong> 请务必将理论文本<strong>滑动到底部</strong>。</li>
+                <li>{famClickDone ? '✅ ' : '⬜ '} <strong>右侧：</strong> 请点击红色的测试按钮。</li>
+                <li>{famTimerDone ? '✅ ' : '⏳ '} <strong>阅读：</strong> 请仔细阅读页面内容（需等待 {15} 秒）。</li>
+              </ul>
+            </div>
+            <div style={{ border: '2px dashed #cbd5e1', borderRadius: '12px', padding: '1rem', marginBottom: '2.5rem', height: '300px', display: 'flex', overflow: 'hidden', background: '#f8fafc' }}>
+              <div style={{ flex: 1, borderRight: '1px dashed #cbd5e1', padding: '1.5rem', overflowY: 'auto', scrollBehavior: 'smooth' }} onScroll={(e) => { const { scrollTop, scrollHeight, clientHeight } = e.currentTarget; if (scrollHeight - scrollTop - clientHeight < 10) { if (!famScrollDone) setFamScrollDone(true); } }}>
+                <h4 style={{ fontWeight: 'bold', marginBottom: '0.5rem', color: '#334155' }}>📜 理论区域 (示例)</h4>
+                {famScrollDone && <p style={{color: '#16a34a', fontSize: '0.8rem', fontWeight: 'bold', marginBottom: '0.5rem'}}>✅ 已滚动到底部</p>}
+                <p style={{ fontSize: '0.95rem', color: '#64748b', lineHeight: 1.8 }}>
+                  <strong>（请尝试在此区域上下滚动鼠标滚轮，直到最底部）</strong><br/><br/>
+                  色彩心理学是研究色彩对人类行为影响的学科。在设计中，色彩不仅仅是装饰，它承载着情感和功能。<br/><br/>
+                  <strong>1. 暖色调的影响：</strong><br/>
+                  暖色调（如红色、橙色、黄色）通常能引起兴奋、紧迫或温暖的情绪。例如，快餐店常使用红色和黄色来刺激食欲并加快顾客的流动速度。而在警示标志中，红色则用来传达危险或禁止的信息，因为它能最快地抓住人的注意力。<br/><br/>
+                  <strong>[请继续向下滚动...]</strong><br/><br/>
+                  <strong>2. 冷色调的影响：</strong><br/>
+                  冷色调（如蓝色、绿色、紫色）则通常带给人平静、专业和信任的感受。这就是为什么很多银行、科技公司（如IBM、Facebook）和医疗机构偏爱使用蓝色的原因。绿色则常与自然、健康和生长联系在一起，常用于环保或有机产品的设计。<br/><br/>
+                  <strong>3. 中性色的运用：</strong><br/>
+                  黑、白、灰等中性色在设计中起着平衡和衬托的作用。白色通常代表简洁、纯净（如Apple的设计风格），而黑色则常用于表现高端、神秘或权威感。<br/><br/>
+                  (恭喜您，您已成功滚动到底部！)
+                </p>
+              </div>
+              <div style={{ flex: 1, padding: '1.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                <h4 style={{ fontWeight: 'bold', marginBottom: '1rem', color: '#334155' }}>🖱️ 案例区域 (示例)</h4>
+                <div style={{ width: '80%', height: '100px', background: '#fee2e2', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '12px', marginBottom: '1.5rem', border: '2px solid #fca5a5' }}>
+                  <span style={{ color: '#dc2626', fontWeight: 'bold' }}>红色按钮</span>
+                </div>
+                <button style={{ padding: '0.75rem 1.5rem', background: famClickDone ? '#dcfce7' : 'white', border: famClickDone ? '1px solid #16a34a' : '1px solid #cbd5e1', color: famClickDone ? '#16a34a' : '#475569', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.05)', transition: 'all 0.2s', fontWeight: '600' }} onClick={() => { setFamClickDone(true); alert("交互测试成功！按钮功能正常。"); }}>
+                  {famClickDone ? '✅ 测试成功' : '试着点击我'}
+                </button>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <button onClick={() => { if (isReady) proceedToNextPhase(); }} disabled={!isReady} style={{ ...styles.button, width: 'auto', padding: '1rem 4rem', fontSize: '1.1rem', background: isReady ? '#3b82f6' : '#94a3b8', cursor: isReady ? 'pointer' : 'not-allowed', transition: 'all 0.3s' }}>
+                {!famTimerDone ? `请仔细阅读说明 (${famCountdown}s)` : !famScrollDone ? '请先在左侧区域滑动到底部' : !famClickDone ? '请点击右侧红色按钮测试' : '我已准备好，开始正式学习 🚀'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'learning') {
+      return (
+        <div style={styles.learningContainer}>
+          <div style={styles.header}>
+            <div style={styles.headerContent}>
+              <div style={styles.headerInfo}>
+                <div style={styles.infoItem}>
+                  <Icon name="user" style={styles.infoIcon} />
+                  <span>被试: {participantId}</span>
+                </div>
+                <div style={styles.infoItem}>
+                  <Icon name="clock" style={styles.infoIcon} />
+                  <span>
+                    {Math.floor(sessionTime / 60)}:{(sessionTime % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+                 <div style={styles.infoItem}>
+                   <Icon name="wifi" style={{ ...styles.infoIcon, color: isConnected ? '#10b981' : '#9ca3af' }} />
+                   <span style={{color: isConnected ? '#10b981' : '#9ca3af', fontSize: '0.8rem'}}>
+                     {isConnected ? '已连接' : '连接中...'}
+                   </span>
+                </div>
+                {/* === 新增：Pupil 连接状态显示 === */}
+                <div style={{
+                    ...styles.infoItem,
+                    background: pupilStatus === 'connected' ? '#ecfdf5' : pupilStatus === 'connecting' ? '#fff7ed' : '#fef2f2',
+                    border: `1px solid ${pupilStatus === 'connected' ? '#a7f3d0' : pupilStatus === 'connecting' ? '#fed7aa' : '#fecaca'}`
+                }}>
+                   {inputMode === 'mouse' ? (
+                       <>
+                           <Icon name="mouse" size={16} /> <span style={{fontSize:'0.8rem'}}>模式: 鼠标</span>
+                       </>
+                   ) : (
+                       <>
+                           <Icon name="pupil" size={16} /> 
+                           <span style={{fontSize:'0.8rem', color: pupilStatus === 'connected' ? '#047857' : pupilStatus === 'connecting' ? '#c2410c' : '#b91c1c'}}>
+                               Pupil: {pupilStatus === 'connected' ? '已连接' : pupilStatus === 'connecting' ? '连接中...' : '连接断开'}
+                           </span>
+                           {pupilStatus === 'failed' && (
+                               <button 
+                                onClick={manualReconnect}
+                                style={{
+                                    marginLeft: '0.5rem',
+                                    padding: '2px 8px',
+                                    fontSize: '0.7rem',
+                                    background: '#ef4444',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer'
+                                }}
+                               >重连</button>
+                           )}
+                       </>
+                   )}
+                </div>
+              </div>
+            <button
+                onClick={() => setShowFinishConfirm(true)} 
+                style={{
+                  ...styles.button,
+                  padding: '0.5rem 1.2rem',
+                  fontSize: '0.9rem',
+                  width: 'auto',
+                  background: '#10b981', 
+                  boxShadow: '0 2px 4px rgba(16, 185, 129, 0.2)'
+                }}
+                onMouseOver={(e) => e.target.style.background = '#059669'}
+                onMouseOut={(e) => e.target.style.background = '#10b981'}
+              >
+                完成学习
+              </button>
+            </div>
+          </div>
+          <div style={styles.taskBar}>
+            <Icon name="book" size={18} />
+            <span style={{ fontWeight: '600', color: '#1e40af' }}>当前任务：</span>
+            <span>请阅读左侧理论知识，并结合右侧案例进行深入理解。</span>
+          </div>
+          <div style={styles.splitLayout}>
+            <div style={{ ...styles.panel, ...styles.theoryPanel }} onScroll={handleScroll} onMouseMove={(e) => handleMouseMove(e, 'theory')}>
+              <div style={styles.panelContent}>
+                <h1 style={styles.panelTitle}>📚 交互设计基础：可供性（Affordance）理论</h1>
+                <div style={{ lineHeight: 1.9, color: '#334155', fontSize: '1.05rem' }}>
+                  
+                  <div onMouseEnter={() => handleInteraction("1. 概念起源 (Gibson)", "gibson")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>1. 概念起源与生态心理学定义</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>“可供性”（Affordance）这一概念最早由美国生态心理学家 <strong>James J. Gibson</strong> 在其1977年的著作《视觉感知的生态学方法》中提出。Gibson 创造这个词是为了描述环境与动物之间的互补关系。在他看来，可供性是环境为动物提供的“行动可能性”，无论这种可能性是好是坏。</p>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>例如，对于人类而言，一块平坦坚硬的地面提供了“行走”的可供性；一把齐膝高的椅子提供了“坐下”的可供性；而一块小石头则提供了“投掷”的可供性。Gibson 强调，可供性是客观存在的物理属性，它独立于观察者的感知——即无论你是否看到那把椅子，它客观上都具备让人坐的功能。这一观点强调了环境属性与生物体能力的直接对应关系。</p>
+                  </div>
+
+                  <div onMouseEnter={() => handleInteraction("2. Norman的修正 (感知)", "norman")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>2. 设计领域的引入：唐纳德·诺曼的修正</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>1988年，认知科学家 <strong>Donald Norman</strong> 在其经典著作《设计心理学》（The Design of Everyday Things）中将这一概念引入了人机交互与工业设计领域。然而，Norman 对 Gibson 的原始定义进行了关键性的修正，他提出在设计中更重要的是<strong>“感知可供性”（Perceived Affordance）</strong>。</p>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>在设计语境下，如果一个物体在物理上能够被操作（例如一个可以点击的按钮），但用户在视觉上无法感知到它是可以点击的，那么这个设计就是失败的。Norman 认为，设计师的职责不仅仅是创造功能，更重要的是通过视觉线索让用户“感知”到这些功能。因此，在交互设计中，当我们谈论可供性时，通常指的是“感知到的可供性”。</p>
+                  </div>
+
+                  <div onMouseEnter={() => handleInteraction("3. 可供性 vs 意符", "signifier")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>3. 关键区分：可供性 vs. 意符 (Signifiers)</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>随着触屏设备和扁平化设计的兴起，单纯依靠物理特征来传达功能变得越来越困难。为了解决这一混淆，Norman 在其书的修订版中进一步区分了“可供性”和“意符”。这是理解现代界面设计的关键：</p>
+                    <ul style={{ paddingLeft: '2rem', marginBottom: '1.2rem', listStyleType: 'disc' }}>
+                        <li style={{ marginBottom: '0.8rem' }}><strong>可供性（Affordance）：</strong> 是可能的操作本身。例如，手机屏幕本身提供了“触摸”的可供性，你可以点击屏幕的任何位置。</li>
+                        <li style={{ marginBottom: '0.8rem' }}><strong>意符（Signifiers）：</strong> 是提示操作的信号或标记。例如，屏幕上的一个蓝色矩形框、一个下划线文本、或者一个向右的箭头。这些视觉元素告诉用户：“如果你在这里点击，会发生特定的事情”。</li>
+                    </ul>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>在数字界面设计中，设计师实际上是在构建“意符”来暗示底层的“可供性”。如果意符缺失或误导，用户就会感到困惑。</p>
+                  </div>
+
+                  <div onMouseEnter={() => handleInteraction("4. Gaver矩阵分类", "gaver")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>4. Gaver 的可供性分类矩阵</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>William Gaver 进一步将可供性细分为四种类型，这有助于我们分析界面中的可用性问题：</p>
+                    <div style={{ background: '#f1f5f9', padding: '1.5rem', borderRadius: '12px', borderLeft: '4px solid #94a3b8', marginBottom: '1.5rem' }}>
+                        <ul style={{ paddingLeft: '1.5rem', marginBottom: '0' }}>
+                        <li style={{ marginBottom: '0.8rem' }}><strong>显性可供性 (Perceptible Affordance)：</strong> 功能存在且信息可见。这是最理想的设计状态（如：有立体感的按钮）。</li>
+                        <li style={{ marginBottom: '0.8rem' }}><strong>虚假可供性 (False Affordance)：</strong> 信息可见但功能不存在。这是设计的陷阱（如：看起来像按钮的装饰图片，点击无效）。</li>
+                        <li style={{ marginBottom: '0.8rem' }}><strong>隐藏可供性 (Hidden Affordance)：</strong> 功能存在但信息不可见。这需要用户探索或记忆（如：下拉刷新、隐藏的手势操作）。</li>
+                        <li style={{ marginBottom: '0.5rem' }}><strong>正确拒绝 (Correct Rejection)：</strong> 功能不存在且信息不可见。这避免了用户的误操作。</li>
+                        </ul>
+                    </div>
+                  </div>
+
+                  <div onMouseEnter={() => handleInteraction("5. 视觉线索应用", "cues")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>5. 数字界面中的视觉线索应用</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>在现代 UI/UX 设计中，为了实现显性可供性，设计师通常利用以下视觉属性来模拟物理世界的隐喻：</p>
+                    <p style={{ marginBottom: '0.8rem' }}><strong>(1) 材质与阴影 (Material & Shadow)：</strong><br/>借鉴物理光学原理，通过投射阴影（Drop Shadow）使元素在Z轴上浮起，暗示其可以被按压。Material Design 是这一理念的典型代表。</p>
+                    <p style={{ marginBottom: '0.8rem' }}><strong>(2) 形状与圆角 (Shape & Radius)：</strong><br/>圆角矩形比直角矩形更像是一个可以操作的实体“物体”，因此常被用于按钮和卡片设计。完全的圆形通常暗示它是头像或单选按钮。</p>
+                    <p style={{ marginBottom: '0.8rem' }}><strong>(3) 状态变化 (State Change)：</strong><br/>当鼠标悬停（Hover）或点击（Active）时，元素应当立即发生颜色或位置的变化。这种即时反馈确认了可供性的存在，增强了用户的控制感。</p>
+                    <p style={{ marginBottom: '1.2rem' }}><strong>(4) 惯例与隐喻 (Convention)：</strong><br/>有些可供性是基于习得的惯例。例如，放大镜图标代表“搜索”，汉堡菜单（三条横线）代表“更多选项”。虽然它们在物理上没有对应物，但已成为数字世界的通用语言。</p>
+                  </div>
+
+                  <div onMouseEnter={() => handleInteraction("6. 扁平化设计反思", "flat")}>
+                    <h3 style={{fontSize: '1.25rem', fontWeight: '700', color: '#1e293b', marginTop: '2rem', marginBottom: '0.8rem'}}>6. 扁平化设计的挑战与反思</h3>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>2010年代初兴起的“扁平化设计”（Flat Design）虽然带来了极简的美学，但也引发了“可供性危机”。去除了阴影、纹理和渐变后，用户往往难以区分哪些是文本，哪些是按钮。</p>
+                    <p style={{ marginBottom: '1.2rem', textIndent: '2em' }}>为了解决这个问题，现代设计演变为“扁平化 2.0”或“新拟物化”，即在保持简洁的同时，重新引入微妙的阴影和层级关系，以确保可供性的清晰表达。这一演变过程深刻说明了可供性在人机交互效率中的决定性作用。</p>
+                  </div>
+
+                  <div style={{ marginTop: '4rem', padding: '2rem', background: '#eff6ff', borderRadius: '12px', textAlign: 'center', color: '#1d4ed8', fontSize: '1rem', border: '1px dashed #bfdbfe' }}>
+                    <strong style={{ fontSize: '1.2rem', display: 'block', marginBottom: '0.5rem' }}>🎉 恭喜！您已完成所有理论内容的阅读。</strong>现在，请结合右侧的案例，思考上述理论（特别是“显性可供性”与“虚假可供性”）是如何在实际设计中体现的。
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ ...styles.panel, ...styles.casePanel }} onMouseMove={(e) => handleMouseMove(e, 'case')}>
+              <div style={styles.panelContent}>
+                <h2 style={styles.panelTitle}>🖼️ 案例研究：可供性的实际应用</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+                  <div onMouseEnter={() => handleInteraction("案例1: 门把手对比", "case_handle")}>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#475569', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>案例1：门把手设计对比</h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                      <div style={{ border: '2px solid #22c55e', borderRadius: '12px', padding: '1.5rem', background: '#f0fdf4' }}>
+                        <div style={{ height: '12rem', borderRadius: '8px', overflow: 'hidden', marginBottom: '1rem', border: '1px solid #d1d5db' }}>
+                          <img src="handle-good.jpg" alt="良好设计：清晰的把手" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        </div>
+                        <p style={{ fontWeight: '700', color: '#15803d', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Icon name="check" size={16}/> 良好设计</p>
+                        <p style={{ fontSize: '0.9rem', color: '#334155', lineHeight: 1.6 }}><strong>显性可供性：</strong>横向把手通过其物理形状（凸起、便于抓握）清晰地提供了“拉”的视觉线索，用户无需思考即可操作。</p>
+                      </div>
+                      <div style={{ border: '2px solid #ef4444', borderRadius: '12px', padding: '1.5rem', background: '#fef2f2' }}>
+                        <div style={{ height: '12rem', borderRadius: '8px', overflow: 'hidden', marginBottom: '1rem', border: '1px solid #d1d5db' }}>
+                          <img src="handle-bad.jpg" alt="糟糕设计：平板门" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        </div>
+                        <p style={{ fontWeight: '700', color: '#b91c1c', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Icon name="close" size={16}/> 糟糕设计</p>
+                        <p style={{ fontSize: '0.9rem', color: '#334155', lineHeight: 1.6 }}><strong>隐藏/虚假可供性：</strong>平板设计缺乏“推”或“拉”的意符。如果没有文字说明，用户很难判断该如何操作，增加了认知负荷。</p>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div onMouseEnter={() => handleInteraction("案例2: 按钮设计", "case_button")}>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#475569', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>案例2：界面按钮设计</h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+                      <div style={{ border: '2px solid #22c55e', borderRadius: '12px', padding: '1.5rem', background: '#f0fdf4' }}>
+                        <div style={{ background: 'white', height: '8rem', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem', boxShadow: '0 2px 6px rgba(0,0,0,0.05)' }}>
+                          <button style={{ background: '#3b82f6', color: 'white', padding: '0.8rem 2rem', borderRadius: '6px', border: 'none', fontWeight: '600', boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)', cursor: 'pointer' }}>点击我</button>
+                        </div>
+                        <p style={{ fontWeight: '700', color: '#15803d', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Icon name="check" size={16}/> 良好设计</p>
+                        <p style={{ fontSize: '0.9rem', color: '#334155' }}>明显的阴影和圆角清晰传达了"可点击"的可供性。</p>
+                      </div>
+                      <div style={{ border: '2px solid #ef4444', borderRadius: '12px', padding: '1.5rem', background: '#fef2f2' }}>
+                        <div style={{ background: 'white', height: '8rem', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '1rem', boxShadow: '0 2px 6px rgba(0,0,0,0.05)' }}>
+                          <span style={{ color: '#94a3b8', padding: '0.8rem 2rem' }}>点击我</span>
+                        </div>
+                        <p style={{ fontWeight: '700', color: '#b91c1c', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}><Icon name="close" size={16}/> 糟糕设计</p>
+                        <p style={{ fontSize: '0.9rem', color: '#334155' }}>缺乏视觉线索（无边框、无阴影），用户难以识别其功能。</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {showFinishConfirm && (
+            <div style={styles.modalOverlay}>
+              <div style={{ ...styles.modal, maxWidth: '400px', textAlign: 'center', padding: '2rem' }}>
+                  <div style={{ fontSize: '3.5rem', marginBottom: '1rem' }}>🤔</div>
+                  <h3 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1e293b', marginBottom: '1rem' }}>
+                    确认完成学习？
+                  </h3>
+                  <p style={{ color: '#64748b', lineHeight: 1.6, marginBottom: '2rem' }}>
+                    请确保您已经<strong>仔细阅读</strong>了左侧的理论知识，并<strong>深入理解</strong>了右侧的案例对比。<br/>
+                    <span style={{ fontSize: '0.85rem', color: '#94a3b8', marginTop: '0.5rem', display: 'block' }}>(一旦完成学习，将无法返回查看内容)</span>
+                  </p>
+                  
+                  <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+                    <button
+                      onClick={() => setShowFinishConfirm(false)}
+                      style={{
+                        ...styles.button,
+                        background: 'white',
+                        color: '#475569',
+                        border: '1px solid #e2e8f0',
+                        boxShadow: 'none'
+                      }}
+                      onMouseOver={(e) => e.target.style.background = '#f8fafc'}
+                      onMouseOut={(e) => e.target.style.background = 'white'}
+                    >
+                      返回继续学习
+                    </button>
+                    
+                    <button
+                      onClick={() => {
+                        setShowFinishConfirm(false);
+                        proceedToNextPhase(); 
+                      }}
+                      style={{ ...styles.button, background: '#10b981', border: 'none', color: 'white' }} 
+                      onMouseOver={(e) => e.target.style.background = '#059669'}
+                      onMouseOut={(e) => e.target.style.background = '#10b981'}
+                    >
+                      确认完成
+                    </button>
+                  </div>
+              </div>
+            </div>
+          )}
+
+          {showLearningGuide && (
+            <div style={styles.modalOverlay}>
+              <div style={styles.modal}>
+                <div style={styles.modalHeader}>
+                  <h3 style={styles.modalTitle}><Icon name="target" /> 正式学习任务说明</h3>
+                </div>
+                <div style={styles.modalContent}>
+                  <div style={{ lineHeight: 1.8, color: '#334155', fontSize: '1rem' }}>
+                    <p style={{ marginBottom: '1.5rem' }}>本界面分为左右两个主要区域，请按照以下方式进行学习：</p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem', marginBottom: '1.5rem' }}>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'start', background: '#eff6ff', padding: '1.2rem', borderRadius: '12px', border: '1px solid #dbeafe' }}>
+                        <div style={{ background: '#3b82f6', color: 'white', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 'bold', whiteSpace: 'nowrap', height: 'fit-content' }}>左侧区域</div>
+                        <div>
+                          <strong style={{ display: 'block', marginBottom: '0.3rem', color: '#1e3a8a', fontSize: '1.05rem' }}>📖 理论知识文本</strong>
+                          <span style={{ fontSize: '0.95rem', color: '#475569' }}>这里详细介绍了“可供性”的核心概念、定义及特征。您可以上下滚动阅读完整内容。</span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'start', background: '#f0fdf4', padding: '1.2rem', borderRadius: '12px', border: '1px solid #bbf7d0' }}>
+                        <div style={{ background: '#22c55e', color: 'white', padding: '0.2rem 0.6rem', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 'bold', whiteSpace: 'nowrap', height: 'fit-content' }}>右侧区域</div>
+                        <div>
+                          <strong style={{ display: 'block', marginBottom: '0.3rem', color: '#14532d', fontSize: '1.05rem' }}>🖼️ 具体设计案例</strong>
+                          <span style={{ fontSize: '0.95rem', color: '#475569' }}>这里展示了门把手和界面按钮的实际应用案例，包含良好设计与糟糕设计的对比。</span>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '1rem', alignItems: 'start', background: '#fff7ed', padding: '1.2rem', borderRadius: '12px', border: '1px dashed #f97316' }}>
+                        <div style={{ fontSize: '1.5rem' }}>💡</div>
+                        <div>
+                          <strong style={{ display: 'block', marginBottom: '0.3rem', color: '#9a3412', fontSize: '1.05rem' }}>核心学习任务</strong>
+                          <span style={{ fontSize: '0.95rem', color: '#9a3412' }}>请不要孤立地阅读。您的目标是将<strong>左侧的抽象理论</strong>与<strong>右侧的具体案例</strong>联系起来，思考理论是如何在这些案例中体现的。</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style={styles.modalFooter}>
+                  <button onClick={() => setShowLearningGuide(false)} style={{ ...styles.button, width: '100%' }}>我明白了，开始学习 🚀</button>
+                </div>
+              </div>
+            </div>
+          )}
+          {showFeedback && (
+            <div style={styles.modalOverlay}>
+              <div style={styles.modal}>
+                <div style={styles.modalHeader}>
+                  <h3 style={styles.modalTitle}>
+                    {CONTENT_FEEDBACK_MAP[currentContentBlock]?.levels?.[feedbackLevel]?.title || "智能提示"}
+                  </h3>
+                  <button onClick={() => setShowFeedback(false)} style={styles.closeButton}><Icon name="close" /></button>
+                </div>
+                <div style={styles.modalContent}>
+                  <div style={{ background: '#eff6ff', borderLeft: '4px solid #3b82f6', padding: '1.5rem', borderRadius: '0 8px 8px 0' }}>
+                    <p style={{ color: '#1e40af', lineHeight: 1.6, fontSize: '1.05rem' }}>{feedbackContent}</p>
+                  </div>
+                </div>
+                <div style={styles.modalFooter}>
+                  <button onClick={() => setShowFeedback(false)} style={{ ...styles.button, width: 'auto', padding: '0.6rem 1.5rem' }}>知道了</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'posttest') {
+      const isAllAnswered = POSTTEST_MCQ_QUESTIONS.every(q => {
+        const answer = mcqAnswers[q.id];
+        if (q.type === 'multi') {
+          return Array.isArray(answer) && answer.length > 0;
+        }
+        return answer !== undefined;
+      });
+      
+      const isShortAnswerFilled = shortAnswer.trim().length >= 10;
+      const isTimeUp = postTestTimeLeft === 0;
+
+      const canSubmit = isAllAnswered && isShortAnswerFilled && isTimeUp;
+
+      const handleMultiSelect = (qId, optIdx) => {
+        const current = mcqAnswers[qId] || [];
+        let updated;
+        if (current.includes(optIdx)) {
+          updated = current.filter(i => i !== optIdx); 
+        } else {
+          updated = [...current, optIdx]; 
+        }
+        setMcqAnswers(prev => ({ ...prev, [qId]: updated }));
+      };
+
+      return (
+        <div style={styles.learningContainer}>
+          <div style={styles.header}>
+            <div style={styles.headerContent}>
+              <div style={styles.headerInfo}>
+                <div style={styles.infoItem}>
+                  <Icon name="user" style={styles.infoIcon} />
+                  <span>被试: {participantId}</span>
+                </div>
+                <div style={styles.infoItem}>
+                  <Icon name="clock" style={styles.infoIcon} />
+                  <span>
+                    {Math.floor(sessionTime / 60)}:{(sessionTime % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div style={styles.consentContainer}> 
+            <div style={styles.consentBox}>
+              <div style={{ 
+                position: 'sticky', 
+                top: 0, 
+                background: 'rgba(255,255,255,0.95)', 
+                backdropFilter: 'blur(8px)',
+                padding: '1.5rem 0', 
+                borderBottom: '1px solid #e5e7eb', 
+                marginBottom: '2rem', 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                alignItems: 'center',
+                zIndex: 10
+              }}>
+                <h2 style={{ margin: 0, fontSize: '1.8rem', color: '#1e293b', fontWeight: '800' }}>✍️ 学习评估</h2>
+                <div style={{ 
+                  background: isTimeUp ? '#dcfce7' : '#fff7ed', 
+                  color: isTimeUp ? '#166534' : '#c2410c', 
+                  padding: '0.5rem 1rem', 
+                  borderRadius: '20px', 
+                  fontWeight: 'bold', 
+                  fontSize: '0.9rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  border: isTimeUp ? '1px solid #bbf7d0' : '1px solid #fed7aa'
+                }}>
+                  <Icon name="clock" size={16} />
+                  {isTimeUp ? '作答时间已满足' : `最少作答时间剩余: ${Math.floor(postTestTimeLeft / 60)}分 ${(postTestTimeLeft % 60).toString().padStart(2, '0')}秒`}
+                </div>
+              </div>
+              
+              <div style={{ marginBottom: '2rem' }}>
+                <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: '#334155', marginBottom: '1.5rem' }}>一、知识测验（共10题）<span style={{fontSize:'0.9rem', color:'#ef4444', fontWeight:'normal'}}>*</span></h3>
+                
+                {POSTTEST_MCQ_QUESTIONS.map((q, idx) => (
+                  <div key={q.id} style={{ marginBottom: '1.5rem', padding: '1.5rem', background: '#f8fafc', borderRadius: '12px', borderLeft: (mcqAnswers[q.id] === undefined || (Array.isArray(mcqAnswers[q.id]) && mcqAnswers[q.id].length === 0)) ? '4px solid #cbd5e1' : '4px solid #10b981', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                    <p style={{ fontWeight: '600', color: '#1e293b', marginBottom: '1rem', fontSize: '1.05rem' }}>
+                      {q.question} 
+                      <span style={{ fontSize: '0.8rem', color: q.type === 'multi' ? '#3b82f6' : '#64748b', fontWeight: 'bold', marginLeft: '0.8rem', background: q.type === 'multi' ? '#eff6ff' : '#f1f5f9', padding: '2px 8px', borderRadius: '4px' }}>
+                        {q.type === 'multi' ? '多选' : '单选'}
+                      </span>
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
+                      {q.options.map((opt, optIdx) => {
+                        const isSelected = q.type === 'multi' 
+                          ? (mcqAnswers[q.id] || []).includes(optIdx)
+                          : mcqAnswers[q.id] === optIdx;
+                        
+                        return (
+                          <label 
+                            key={optIdx} 
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              gap: '0.75rem', 
+                              cursor: 'pointer',
+                              padding: '0.75rem',
+                              borderRadius: '8px',
+                              background: isSelected ? '#eff6ff' : 'white',
+                              border: isSelected ? '1px solid #3b82f6' : '1px solid #e2e8f0',
+                              transition: 'all 0.2s'
+                            }}
+                          >
+                            <input
+                              type={q.type === 'multi' ? 'checkbox' : 'radio'}
+                              name={`q-${q.id}`}
+                              checked={isSelected}
+                              onChange={() => {
+                                if (q.type === 'multi') {
+                                  handleMultiSelect(q.id, optIdx); 
+                                } else {
+                                  setMcqAnswers(prev => ({ ...prev, [q.id]: optIdx })); 
+                                }
+                              }}
+                              style={{ width: '1.2rem', height: '1.2rem', accentColor: '#3b82f6', cursor: 'pointer' }}
+                            />
+                            <span style={{ color: isSelected ? '#1e40af' : '#475569', fontWeight: isSelected ? '500' : '400' }}>{opt}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginBottom: '3rem' }}>
+                <h3 style={{ fontSize: '1.4rem', fontWeight: '700', color: '#334155', marginBottom: '1.5rem' }}>二、案例分析（简答题） <span style={{fontSize:'0.9rem', color:'#ef4444', fontWeight:'normal'}}>*</span></h3>
+                <div style={{ marginBottom: '1.5rem', background: '#f8fafc', padding: '2rem', borderRadius: '12px', textAlign: 'center', border: '1px dashed #cbd5e1' }}>
+                   <img 
+                     src="/case-study.png" 
+                     alt="请在public目录下放入名为 case-study.png 的图片，用于案例分析" 
+                     style={{ 
+                       maxWidth: '100%', 
+                       width: '100%',
+                       height: 'auto', 
+                       borderRadius: '8px',
+                       boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)' 
+                     }} 
+                   />
+                   <p style={{ fontSize: '0.9rem', color: '#64748b', marginTop: '1rem' }}>（图：需分析的真实界面案例）</p>
+                </div>
+                <p style={{ color: '#475569', marginBottom: '0.8rem', fontSize: '1rem', fontWeight: '500' }}>
+                  请结合刚才学习的理论，分析上图中的界面设计。它运用了哪些可供性原理？是否存在问题？(最少10字)
+                </p>
+                <textarea
+                  value={shortAnswer}
+                  onChange={(e) => setShortAnswer(e.target.value)}
+                  style={{
+                    ...styles.input,
+                    width: '100%',
+                    height: '10rem',
+                    fontFamily: 'inherit',
+                    resize: 'vertical',
+                    borderColor: (shortAnswer.trim().length > 0 && shortAnswer.trim().length < 10) ? '#ef4444' : '#e2e8f0',
+                    padding: '1rem'
+                  }}
+                  placeholder="请在此输入您的分析..."
+                />
+                <div style={{ textAlign: 'right', fontSize: '0.85rem', color: shortAnswer.trim().length >= 10 ? '#10b981' : '#ef4444', marginTop: '0.5rem' }}>
+                  字数: {shortAnswer.trim().length} / 10 (最少)
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  if (canSubmit) {
+                    let score = 0;
+                    POSTTEST_MCQ_QUESTIONS.forEach(q => {
+                        const userAnswer = mcqAnswers[q.id];
+                        if (q.type === 'single') {
+                            if (userAnswer === q.correct[0]) score++;
+                        } else {
+                            if (userAnswer && userAnswer.length === q.correct.length && userAnswer.every(val => q.correct.includes(val))) {
+                                score++;
+                            }
+                        }
+                    });
+                    
+                    const accuracy = ((score / POSTTEST_MCQ_QUESTIONS.length) * 100).toFixed(1) + '%';
+                    const totalDuration = Math.floor((Date.now() - learningStartTime.current) / 1000);
+                    
+                    // 将详细的答案（detailedAnswers）打包进 Payload 发送给实验者
+                    const performancePayload = {
+                        mcqScore: score,
+                        accuracy: accuracy, 
+                        shortAnswer: shortAnswer,
+                        totalDuration: totalDuration,
+                        detailedAnswers: mcqAnswers, // 关键：传输具体选项数据
+                        completionTimestamp: Date.now() // 关键：传输完成时间戳
+                    };
+
+                    sendData(null, 'performance', performancePayload);
+                    logBehavior('performance', { score, accuracy, totalDuration });
+
+                    const pData = experimentData.current.participants.get(participantId);
+                    if (pData) {
+                      pData.posttest = {
+                        mcq: mcqAnswers,
+                        shortAnswer: shortAnswer,
+                        timeOnTest: 180 - postTestTimeLeft,
+                        score: score,
+                        accuracy: accuracy,
+                        completionTimestamp: Date.now() 
+                      };
+                    }
+                    proceedToNextPhase();
+                  }
+                }}
+                disabled={!canSubmit}
+                style={{
+                  ...styles.button,
+                  background: canSubmit ? '#3b82f6' : '#cbd5e1',
+                  cursor: canSubmit ? 'pointer' : 'not-allowed',
+                  boxShadow: canSubmit ? '0 4px 6px rgba(59, 130, 246, 0.4)' : 'none',
+                  opacity: canSubmit ? 1 : 0.8,
+                  padding: '1rem 2rem',
+                  fontSize: '1.1rem'
+                }}
+                onMouseOver={(e) => { if(canSubmit) e.target.style.background = styles.buttonHover.background; }}
+                onMouseOut={(e) => { if(canSubmit) e.target.style.background = styles.button.background; }}
+              >
+                {!isAllAnswered ? `请完成所有题目` : 
+                 !isShortAnswerFilled ? `简答题字数不足` :
+                 !isTimeUp ? `请再思考 ${Math.floor(postTestTimeLeft / 60)}分 ${postTestTimeLeft % 60}秒` : 
+                 '提交并继续 (进入NASA-TLX)'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'nasa') {
+      return (
+        <div style={styles.learningContainer}>
+           <div style={styles.header}>
+            <div style={styles.headerContent}>
+              <div style={styles.headerInfo}>
+                <div style={styles.infoItem}>
+                  <Icon name="user" style={styles.infoIcon} />
+                  <span>被试: {participantId}</span>
+                </div>
+                <div style={styles.infoItem}>
+                  <Icon name="clock" style={styles.infoIcon} />
+                  <span>
+                    {Math.floor(sessionTime / 60)}:{(sessionTime % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={styles.consentContainer}>
+            <div style={styles.consentBox}>
+              <h2 style={styles.consentTitle}>📊 NASA-TLX工作负荷量表</h2>
+              <p style={{ color: '#64748b', marginBottom: '2.5rem' }}>请根据刚才的学习体验，拖动滑块评价您在以下六个维度上的感受。</p>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', marginBottom: '3rem' }}>
+                {NASA_DIMENSIONS.map((dimension) => (
+                  <div key={dimension.key} style={{ padding: '1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
+                       <h3 style={{ fontWeight: '700', color: '#334155', margin: 0, fontSize: '1.1rem' }}>{dimension.label}</h3>
+                       <span style={{ fontWeight: '800', color: '#3b82f6', fontSize: '1.2rem', background: '#eff6ff', padding: '0.2rem 0.8rem', borderRadius: '8px' }}>{nasaTlx[dimension.key]}</span>
+                    </div>
+                    
+                    <p style={{ fontSize: '0.9rem', color: '#64748b', marginBottom: '1.5rem' }}>{dimension.description}</p>
+                    
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="5"
+                      value={nasaTlx[dimension.key]}
+                      onChange={(e) => setNasaTlx(prev => ({
+                        ...prev,
+                        [dimension.key]: parseInt(e.target.value)
+                      }))}
+                      style={{
+                        width: '100%',
+                        height: '6px',
+                        background: '#e2e8f0',
+                        borderRadius: '3px',
+                        appearance: 'none',
+                        cursor: 'pointer',
+                        display: 'block',
+                        margin: '0'
+                      }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.8rem', padding: '0 2px' }}>
+                      <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>0 (非常低)</span>
+                      <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>100 (非常高)</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <button
+                onClick={() => {
+                  if (nasaSubmitCountdown > 0) return;
+                  const pData = experimentData.current.participants.get(participantId);
+                  if (pData) pData.nasaTlx = nasaTlx;
+                  
+                  // 【修改点：同步NASA-TLX】
+                  sendData(null, 'nasa', nasaTlx);
+
+                  if (role === 'learner') {
+                      const totalSeconds = Math.floor((Date.now() - (sessionStartTime.current || Date.now())) / 1000);
+                      setSessionTime(totalSeconds);
+                  }
+                  proceedToNextPhase();
+                }}
+                disabled={nasaSubmitCountdown > 0}
+                style={{ 
+                  ...styles.button, 
+                  padding: '1rem 2rem', 
+                  fontSize: '1.1rem',
+                  background: nasaSubmitCountdown > 0 ? '#cbd5e1' : '#3b82f6',
+                  cursor: nasaSubmitCountdown > 0 ? 'not-allowed' : 'pointer'
+                }}
+                onMouseOver={(e) => { if(nasaSubmitCountdown <= 0) e.target.style.background = styles.buttonHover.background; }}
+                onMouseOut={(e) => { if(nasaSubmitCountdown <= 0) e.target.style.background = styles.button.background; }}
+              >
+                {nasaSubmitCountdown > 0 
+                  ? `请仔细思考... (${nasaSubmitCountdown}s)` 
+                  : '提交并完成实验'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (experimentPhase === 'complete') {
+      // 【修改点】: 读取保存的时间戳进行格式化，比 new Date() 更稳定
+      const pData = experimentData.current.participants.get(participantId);
+      const finishTimestamp = pData?.posttest?.completionTimestamp || Date.now();
+      const finishDateStr = new Date(finishTimestamp).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+
+      return (
+        <div style={{ ...styles.consentContainer, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ ...styles.consentBox, textAlign: 'center', padding: '4rem 3rem' }}>
+            <div style={{ fontSize: '5rem', marginBottom: '1.5rem' }}>✅</div>
+            <h2 style={{ fontSize: '2.5rem', fontWeight: '800', color: '#1e293b', marginBottom: '1rem' }}>实验完成</h2>
+            <p style={{ color: '#64748b', marginBottom: '2rem', lineHeight: 1.6, fontSize: '1.1rem' }}>
+              感谢您参与本次认知负荷与任务绩效研究实验。<br/>您的数据已成功记录，这将支撑我完成一项伟大的研究！
+            </p>
+            <div style={{ 
+              background: '#f0fdf4', 
+              border: '1px solid #bbf7d0', 
+              borderRadius: '12px', 
+              padding: '1.5rem',
+              marginBottom: '2.5rem'
+            }}>
+              <p style={{ fontSize: '1rem', color: '#15803d', fontWeight: '600' }}>
+                实验编号: {participantId} <span style={{ margin: '0 0.5rem', color: '#bbf7d0' }}>|</span> 总时长: {Math.floor(sessionTime / 60)}分 {sessionTime % 60}秒
+              </p>
+              {/* 显示修改后的完成日期 */}
+              <p style={{ fontSize: '0.9rem', color: '#64748b', marginTop: '0.5rem' }}>
+                完成日期: {finishDateStr}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setRole(null);
+                setParticipantId('');
+                setExperimentPhase('consent');
+                setSessionTime(0);
+                setMcqAnswers({});
+                setShortAnswer('');
+                setNasaTlx({ mental: 50, physical: 50, temporal: 50, performance: 50, effort: 50, frustration: 50 });
+              }}
+              style={{
+                ...styles.button,
+                background: '#64748b',
+                width: 'auto',
+                padding: '0.85rem 2.5rem',
+                fontSize: '1rem'
+              }}
+              onMouseOver={(e) => e.target.style.background = '#475569'}
+              onMouseOut={(e) => e.target.style.background = '#64748b'}
+            >
+             返回主页
+            </button>
+          </div>
+        </div>
+      );
+    }
+  }
+
+  return null;
+};
+
+export default CognitiveLoadPlatform;

@@ -1,0 +1,13 @@
+# serverless.yml
+component: website # 使用静态网站组件，比 http 组件更适合你的场景
+name: my-recruit-app
+app: recruitapp
+stage: dev
+
+inputs:
+  src:
+    dist: ./   # 告诉服务器：网站文件就在当前目录下
+    hook:      # 留空，或者直接把这行删掉。重点是不要有 npm run build
+  region: ap-guangzhou # 你可以选择离你近的地区，如 ap-shanghai, ap-beijing
+  bucket: my-recruit-app-bucket # 名字可以随便改一个独特的
+  protocol: https
