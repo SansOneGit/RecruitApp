@@ -12,7 +12,7 @@ const app = cloudbase.init({
 const db = app.database();
 
 // ==========================================
-// 样式定义 (Apple Design System 2.0)
+// 样式定义 (Apple Design System 2.0 - Adjusted Spacing)
 // ==========================================
 const colors = {
   bg: '#F5F5F7',
@@ -37,12 +37,17 @@ const styles = {
     color: colors.textPrimary,
     overflow: 'hidden',
     position: 'relative',
+    // 🔥 MODIFIED: 在移动端让容器背景也是白色，减少视觉断层
+    '@media (max-width: 640px)': {
+       backgroundColor: colors.cardBg,
+    }
   },
   card: {
     backgroundColor: colors.cardBg,
     width: '100%',
     height: '100%', 
-    maxWidth: '480px', 
+    // 🔥 MODIFIED: 增加最大宽度，让卡片更宽，滚动条更靠右
+    maxWidth: '640px', 
     display: 'flex',
     flexDirection: 'column',
     position: 'relative',
@@ -50,7 +55,8 @@ const styles = {
     overflow: 'hidden',
   },
   header: {
-    padding: '0 20px',
+    // 🔥 MODIFIED: 减少头部左右内边距
+    padding: '0 16px',
     height: '60px',
     backgroundColor: colors.glass,
     backdropFilter: 'blur(20px)',
@@ -87,14 +93,16 @@ const styles = {
   scrollContent: {
     flex: 1,
     overflowY: 'auto',
-    padding: '80px 24px 100px 24px', 
+    // 🔥 MODIFIED: 减少内容区域左右内边距 (24px -> 16px)，让内容更靠边
+    padding: '80px 16px 100px 16px', 
     WebkitOverflowScrolling: 'touch',
   },
   footer: {
     position: 'absolute',
     bottom: 0,
     width: '100%',
-    padding: '20px 24px 34px 24px', 
+    // 🔥 MODIFIED: 减少底部左右内边距
+    padding: '20px 16px 34px 16px', 
     backgroundColor: colors.glass,
     backdropFilter: 'blur(20px)',
     WebkitBackdropFilter: 'blur(20px)',
@@ -111,7 +119,8 @@ const styles = {
     marginBottom: '8px',
   },
   bigTitle: {
-    fontSize: '34px',
+    // 🔥 MODIFIED: 稍微减小大标题字号，适应更紧凑的布局
+    fontSize: '32px',
     fontWeight: '700',
     lineHeight: '1.1',
     marginBottom: '16px',
@@ -133,7 +142,8 @@ const styles = {
   infoBox: {
     backgroundColor: '#F5F5F7',
     borderRadius: '20px',
-    padding: '24px',
+    // 🔥 MODIFIED: 减少信息框内边距
+    padding: '20px',
     marginBottom: '24px',
   },
   infoRow: {
@@ -198,6 +208,9 @@ const styles = {
     marginBottom: '30px',
     scrollbarWidth: 'none', 
     msOverflowStyle: 'none',
+    // 🔥 MODIFIED: 让日期滚动条在两侧有留白
+    margin: '0 -16px 30px -16px',
+    padding: '0 16px 4px 16px',
   },
   datePill: {
     flex: '0 0 auto',
@@ -511,7 +524,21 @@ const RecruitApp = () => {
             </div>
             <h2 style={{fontSize: '28px', fontWeight: '700', marginBottom: '8px'}}>预约成功</h2>
             <p style={{color: colors.textSecondary, marginBottom: '40px'}}>您已成功加入实验计划</p>
-            <div style={{backgroundColor: '#F5F5F7', borderRadius: '20px', padding: '24px', textAlign: 'left', marginBottom: '30px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 4px 12px rgba(0,0,0,0.03)'}}>
+            
+            {/* 🔥 MODIFIED: 预约凭证卡片拉长，左右贴边 */}
+            <div style={{
+              backgroundColor: '#F5F5F7',
+              borderRadius: '20px',
+              padding: '24px',
+              textAlign: 'left',
+              marginBottom: '30px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.03)',
+              width: '100%', // 宽度占满
+              boxSizing: 'border-box' // 确保padding包含在宽度内
+            }}>
               <div style={{ flex: 1 }}>
                 <div style={{marginBottom: '12px', fontSize: '13px', color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: '0.5px'}}>预约凭证</div>
                 <div style={{fontSize: '18px', fontWeight: '600', marginBottom: '6px', color: colors.textPrimary}}>{formData.name}</div>
