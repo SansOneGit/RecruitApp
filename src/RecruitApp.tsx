@@ -10,6 +10,7 @@ const app = cloudbase.init({
 
 // 3. 获取数据库引用
 const db = app.database();
+const auth = app.auth(); // 获取 auth 引用
 
 // ==========================================
 // 样式定义 (Apple Design System 2.0 - Adjusted Spacing)
@@ -37,7 +38,6 @@ const styles = {
     color: colors.textPrimary,
     overflow: 'hidden',
     position: 'relative',
-    // 🔥 MODIFIED: 在移动端让容器背景也是白色，减少视觉断层
     '@media (max-width: 640px)': {
        backgroundColor: colors.cardBg,
     }
@@ -46,7 +46,6 @@ const styles = {
     backgroundColor: colors.cardBg,
     width: '100%',
     height: '100%', 
-    // 🔥 MODIFIED: 增加最大宽度，让卡片更宽，滚动条更靠右
     maxWidth: '640px', 
     display: 'flex',
     flexDirection: 'column',
@@ -55,7 +54,6 @@ const styles = {
     overflow: 'hidden',
   },
   header: {
-    // 🔥 MODIFIED: 减少头部左右内边距
     padding: '0 16px',
     height: '60px',
     backgroundColor: colors.glass,
@@ -93,7 +91,6 @@ const styles = {
   scrollContent: {
     flex: 1,
     overflowY: 'auto',
-    // 🔥 MODIFIED: 减少内容区域左右内边距 (24px -> 16px)，让内容更靠边
     padding: '80px 16px 100px 16px', 
     WebkitOverflowScrolling: 'touch',
   },
@@ -101,7 +98,6 @@ const styles = {
     position: 'absolute',
     bottom: 0,
     width: '100%',
-    // 🔥 MODIFIED: 减少底部左右内边距
     padding: '20px 16px 34px 16px', 
     backgroundColor: colors.glass,
     backdropFilter: 'blur(20px)',
@@ -119,7 +115,6 @@ const styles = {
     marginBottom: '8px',
   },
   bigTitle: {
-    // 🔥 MODIFIED: 稍微减小大标题字号，适应更紧凑的布局
     fontSize: '32px',
     fontWeight: '700',
     lineHeight: '1.1',
@@ -142,7 +137,6 @@ const styles = {
   infoBox: {
     backgroundColor: '#F5F5F7',
     borderRadius: '20px',
-    // 🔥 MODIFIED: 减少信息框内边距
     padding: '20px',
     marginBottom: '24px',
   },
@@ -208,7 +202,6 @@ const styles = {
     marginBottom: '30px',
     scrollbarWidth: 'none', 
     msOverflowStyle: 'none',
-    // 🔥 MODIFIED: 让日期滚动条在两侧有留白
     margin: '0 -16px 30px -16px',
     padding: '0 16px 4px 16px',
   },
@@ -305,7 +298,26 @@ const RecruitApp = () => {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [bookedSlots, setBookedSlots] = useState([]);
 
-  // 🔥 修复1：使用腾讯云获取占用情况
+  // 🔥 关键修改：组件加载时，自动进行匿名登录
+  // 如果没有这一步，后续的 db.collection().get() 就会报错或无响应
+  useEffect(() => {
+    const signIn = async () => {
+      try {
+        const loginState = await auth.getLoginState();
+        if (!loginState) {
+          await auth.anonymousAuthProvider().signIn();
+          console.log("CloudBase: 匿名登录成功");
+        } else {
+          console.log("CloudBase: 已是登录状态");
+        }
+      } catch (err) {
+        console.error("CloudBase 登录失败，请检查控制台“登录授权”是否开启匿名登录:", err);
+      }
+    };
+    signIn();
+  }, []);
+
+  // 🔥 获取占用情况
   useEffect(() => {
     if (step === 3 && selectedDate) {
       const fetchBooked = async () => {
@@ -326,7 +338,7 @@ const RecruitApp = () => {
     }
   }, [step, selectedDate]);
 
-  // 🔥 修复2：使用腾讯云提交数据
+  // 🔥 提交数据
   const handleSubmit = async () => {
     setLoading(true);
     const finalMajor = formData.majorSelect === '其他' ? formData.majorInput : formData.majorSelect;
@@ -366,7 +378,7 @@ const RecruitApp = () => {
       
     } catch (err) {
       console.error(err);
-      alert("提交失败：请检查网络");
+      alert("提交失败：" + err.message);
       setLoading(false);
     }
   };
@@ -525,7 +537,6 @@ const RecruitApp = () => {
             <h2 style={{fontSize: '28px', fontWeight: '700', marginBottom: '8px'}}>预约成功</h2>
             <p style={{color: colors.textSecondary, marginBottom: '40px'}}>您已成功加入实验计划</p>
             
-            {/* 🔥 MODIFIED: 预约凭证卡片拉长，左右贴边 */}
             <div style={{
               backgroundColor: '#F5F5F7',
               borderRadius: '20px',
@@ -536,8 +547,8 @@ const RecruitApp = () => {
               justifyContent: 'space-between',
               alignItems: 'center',
               boxShadow: '0 4px 12px rgba(0,0,0,0.03)',
-              width: '100%', // 宽度占满
-              boxSizing: 'border-box' // 确保padding包含在宽度内
+              width: '100%', 
+              boxSizing: 'border-box' 
             }}>
               <div style={{ flex: 1 }}>
                 <div style={{marginBottom: '12px', fontSize: '13px', color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: '0.5px'}}>预约凭证</div>
