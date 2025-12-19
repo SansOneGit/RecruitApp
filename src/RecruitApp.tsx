@@ -300,18 +300,27 @@ const RecruitApp = () => {
 
   // 🔥 关键修改：组件加载时，自动进行匿名登录
   // 如果没有这一步，后续的 db.collection().get() 就会报错或无响应
+ // 🔥 关键修改：兼容不同版本的 SDK 登录方法
   useEffect(() => {
     const signIn = async () => {
       try {
         const loginState = await auth.getLoginState();
         if (!loginState) {
-          await auth.anonymousAuthProvider().signIn();
-          console.log("CloudBase: 匿名登录成功");
+          // 尝试使用兼容写法
+          if (auth.signInAnonymously) {
+             await auth.signInAnonymously();
+             console.log("CloudBase: 匿名登录成功 (Legacy Mode)");
+          } else if (auth.anonymousAuthProvider) {
+             await auth.anonymousAuthProvider().signIn();
+             console.log("CloudBase: 匿名登录成功 (Modern Mode)");
+          } else {
+             console.error("SDK 版本异常：找不到登录方法，请打印 auth 对象查看");
+          }
         } else {
           console.log("CloudBase: 已是登录状态");
         }
       } catch (err) {
-        console.error("CloudBase 登录失败，请检查控制台“登录授权”是否开启匿名登录:", err);
+        console.error("登录失败详情:", err);
       }
     };
     signIn();
