@@ -424,7 +424,7 @@ const RecruitApp = () => {
             </div>
             <div style={{...styles.infoRow, marginBottom: 0}}>
               <div style={styles.infoLabel}>地点时长</div>
-              <div style={styles.infoValue}>J9 设计学院 443 实验室<br/>约 30 分钟</div>
+              <div style={styles.infoValue}>J9 设计学院 453 实验室<br/>约 15 分钟</div>
             </div>
           </div>
         </div>
@@ -564,11 +564,11 @@ const RecruitApp = () => {
                 <div style={{fontSize: '18px', fontWeight: '600', marginBottom: '6px', color: colors.textPrimary}}>{formData.name}</div>
                 <div style={{fontSize: '15px', marginBottom: '4px', color: '#444'}}>{selectedDate}</div>
                 <div style={{fontSize: '15px', color: colors.appleBlue, fontWeight: '500'}}>{FIXED_TIME_SLOTS.find(s=>s.id===selectedSlot)?.text}</div>
-                <div style={{fontSize: '13px', color: colors.textSecondary, marginTop: '12px'}}>J9 设计学院 443</div>
+                <div style={{fontSize: '13px', color: colors.textSecondary, marginTop: '12px'}}>J9 设计学院 453</div>
               </div>
               <div style={{ marginLeft: '20px', paddingLeft: '20px', borderLeft: '2px dashed #D1D1D6', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.8}}>
                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=DesignResearch_${selectedDate}_${formData.name}`} alt="Voucher Code" style={{ width: '80px', height: '80px', display: 'block', borderRadius: '4px' }}/>
-                 <span style={{ fontSize: '10px', color: colors.textSecondary, marginTop: '6px', letterSpacing: '1px', fontWeight: '500' }}>ADMIT ONE</span>
+                 <span style={{ fontSize: '10px', color: colors.textSecondary, marginTop: '6px', letterSpacing: '1px', fontWeight: '500' }}>截图保存</span>
               </div>
             </div>
             <div style={{marginBottom: '20px'}}>
